@@ -214,7 +214,7 @@ int main(int argc, char **argv) try {
 shared_ptr<ClientTrackData> addVideo(const shared_ptr<PeerConnection> pc, const uint8_t payloadType, const uint32_t ssrc, const string cname, const string msid, const function<void (void)> onOpen) {
     auto video = Description::Video(cname);
     video.addH264Codec(payloadType);
-    video.addSSRC(ssrc, cname, msid);
+    video.addSSRC(ssrc, cname, msid, cname);
     auto track = pc->addTrack(video);
     // create RTP configuration
     auto rtpConfig = shared_ptr<RtpPacketizationConfig>(new RtpPacketizationConfig(ssrc, cname, payloadType, H264RtpPacketizer::defaultClockRate));
@@ -223,7 +223,7 @@ shared_ptr<ClientTrackData> addVideo(const shared_ptr<PeerConnection> pc, const 
 	// create H264 handler
 	shared_ptr<H264PacketizationHandler> h264Handler(new H264PacketizationHandler(packetizer));
 	// add RTCP SR handler
-	auto srReporter = make_shared<RtcpSRReporter>(rtpConfig);
+	auto srReporter = make_shared<RtcpSrReporter>(rtpConfig);
 	h264Handler->addToChain(srReporter);
 	// add RTCP NACK handler
 	auto nackResponder = make_shared<RtcpNackResponder>();
@@ -238,7 +238,7 @@ shared_ptr<ClientTrackData> addVideo(const shared_ptr<PeerConnection> pc, const 
 shared_ptr<ClientTrackData> addAudio(const shared_ptr<PeerConnection> pc, const uint8_t payloadType, const uint32_t ssrc, const string cname, const string msid, const function<void (void)> onOpen) {
     auto audio = Description::Audio(cname);
     audio.addOpusCodec(payloadType);
-    audio.addSSRC(ssrc, cname, msid);
+    audio.addSSRC(ssrc, cname, msid, cname);
     auto track = pc->addTrack(audio);
     // create RTP configuration
     auto rtpConfig = shared_ptr<RtpPacketizationConfig>(new RtpPacketizationConfig(ssrc, cname, payloadType, OpusRtpPacketizer::defaultClockRate));
@@ -247,7 +247,7 @@ shared_ptr<ClientTrackData> addAudio(const shared_ptr<PeerConnection> pc, const 
 	// create opus handler
     auto opusHandler = make_shared<OpusPacketizationHandler>(packetizer);
 	// add RTCP SR handler
-	auto srReporter = make_shared<RtcpSRReporter>(rtpConfig);
+	auto srReporter = make_shared<RtcpSrReporter>(rtpConfig);
 	opusHandler->addToChain(srReporter);
 	// add RTCP NACK handler
 	auto nackResponder = make_shared<RtcpNackResponder>();

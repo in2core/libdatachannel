@@ -175,6 +175,9 @@ RTC_EXPORT int rtcAddRemoteCandidate(int pc, const char *cand, const char *mid);
 RTC_EXPORT int rtcGetLocalDescription(int pc, char *buffer, int size);
 RTC_EXPORT int rtcGetRemoteDescription(int pc, char *buffer, int size);
 
+RTC_EXPORT int rtcGetLocalDescriptionType(int pc, char *buffer, int size);
+RTC_EXPORT int rtcGetRemoteDescriptionType(int pc, char *buffer, int size);
+
 RTC_EXPORT int rtcGetLocalAddress(int pc, char *buffer, int size);
 RTC_EXPORT int rtcGetRemoteAddress(int pc, char *buffer, int size);
 
@@ -216,7 +219,7 @@ RTC_EXPORT int rtcGetTrackDescription(int tr, char *buffer, int size);
 /// @param _direction Direction
 /// @param _name Name (optional)
 /// @param _msid MSID (optional)
-/// @param _trackID Track ID used in MSID (optional) 
+/// @param _trackID Track ID used in MSID (optional)
 /// @returns Track id
 RTC_EXPORT int rtcAddTrackEx(int pc, rtcCodec codec, int payloadType, uint32_t ssrc, const char *_mid, rtcDirection direction, const char *_name, const char *_msid, const char *_trackID);
 
@@ -241,9 +244,9 @@ RTC_EXPORT int rtcSetH264PacketizationHandler(int tr, uint32_t ssrc, const char 
 /// @param _timestamp Timestamp
 RTC_EXPORT int rtcSetOpusPacketizationHandler(int tr, uint32_t ssrc, const char * cname, uint8_t payloadType, uint32_t clockRate, uint16_t _sequenceNumber, uint32_t _timestamp);
 
-/// Chain RtcpSRReporter to handler chain for given track
+/// Chain RtcpSrReporter to handler chain for given track
 /// @param tr Track id
-int rtcChainRtcpSRReporter(int tr);
+int rtcChainRtcpSrReporter(int tr);
 
 /// Chain RtcpNackResponder to handler chain for given track
 /// @param tr Track id
@@ -292,9 +295,9 @@ int rtcSetTrackRTPTimestamp(int id, uint32_t timestamp);
 /// @param timestamp Pointer for result
 int rtcGetPreviousTrackSenderReportTimestamp(int id, uint32_t * timestamp);
 
-/// Set `NeedsToReport` flag in RtcpSenderReporter handler identified by given track id
+/// Set `NeedsToReport` flag in RtcpSrReporter handler identified by given track id
 /// @param id Track id
-int rtcSetNeedsToSendRTCPSR(int id);
+int rtcSetNeedsToSendRtcpSr(int id);
 
 #endif // RTC_ENABLE_MEDIA
 

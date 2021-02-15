@@ -20,14 +20,14 @@
 
 #if RTC_ENABLE_MEDIA
 
-#include "messagehandlerelement.hpp"
+#include "mediahandlerelement.hpp"
 
 #include <unordered_map>
 #include <queue>
 
 namespace rtc {
 
-class RTC_CPP_EXPORT RtcpNackResponder: public MessageHandlerElement {
+class RTC_CPP_EXPORT RtcpNackResponder: public MediaHandlerElement {
 
 	/// Packet storage
 	class RTC_CPP_EXPORT Storage {
@@ -84,7 +84,7 @@ public:
 	/// @param messages RTP packets
 	/// @param control RTCP
 	/// @returns Unchanged RTP and RTCP
-	ChainedOutgoingProduct processOutgoingBinaryMessage(ChainedMessagesProduct messages, std::optional<message_ptr> control) override;
+	ChainedOutgoingProduct processOutgoingBinaryMessage(ChainedMessagesProduct messages, message_ptr control) override;
 };
 
 } // namespace rtc

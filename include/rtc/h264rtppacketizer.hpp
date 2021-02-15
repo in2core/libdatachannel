@@ -23,12 +23,12 @@
 
 #include "nalunit.hpp"
 #include "rtppacketizer.hpp"
-#include "messagehandlerrootelement.hpp"
+#include "mediahandlerrootelement.hpp"
 
 namespace rtc {
 
 /// RTP packetization of h264 payload
-class RTC_CPP_EXPORT H264RtpPacketizer : public RtpPacketizer, public MessageHandlerRootElement {
+class RTC_CPP_EXPORT H264RtpPacketizer : public RtpPacketizer, public MediaHandlerRootElement {
 	std::shared_ptr<NalUnits> splitMessage(binary_ptr message);
 	const uint16_t maximumFragmentSize;
 
@@ -55,7 +55,7 @@ public:
 	H264RtpPacketizer(std::shared_ptr<RtpPacketizationConfig> rtpConfig,
 					  uint16_t maximumFragmentSize = NalUnits::defaultMaximumFragmentSize);
 
-	ChainedOutgoingProduct processOutgoingBinaryMessage(ChainedMessagesProduct messages, std::optional<message_ptr> control) override;
+	ChainedOutgoingProduct processOutgoingBinaryMessage(ChainedMessagesProduct messages, message_ptr control) override;
 private:
 	const Separator separator;
 };

@@ -22,11 +22,11 @@
 
 #include "message.hpp"
 #include "rtppacketizationconfig.hpp"
-#include "messagehandlerelement.hpp"
+#include "mediahandlerelement.hpp"
 
 namespace rtc {
 
-class RTC_CPP_EXPORT RtcpSRReporter: public MessageHandlerElement {
+class RTC_CPP_EXPORT RtcpSrReporter: public MediaHandlerElement {
 
 	bool needsToReport = false;
 
@@ -48,9 +48,9 @@ public:
 	/// RTP configuration
 	const std::shared_ptr<RtpPacketizationConfig> rtpConfig;
 
-	RtcpSRReporter(std::shared_ptr<RtpPacketizationConfig> rtpConfig);
+	RtcpSrReporter(std::shared_ptr<RtpPacketizationConfig> rtpConfig);
 
-	ChainedOutgoingProduct processOutgoingBinaryMessage(ChainedMessagesProduct messages, std::optional<message_ptr> control) override;
+	ChainedOutgoingProduct processOutgoingBinaryMessage(ChainedMessagesProduct messages, message_ptr control) override;
 
 	/// Set `needsToReport` flag. Sender report will be sent before next RTP packet with same
 	/// timestamp.
