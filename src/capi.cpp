@@ -449,6 +449,21 @@ int rtcDeleteDataChannel(int dc) {
 
 #if RTC_ENABLE_MEDIA
 
+int rtcSetOnTrack(int pc, rtcOnTrackCallbackFunc cb) {
+	return wrap([pc, cb] {
+		auto peerConnection = getPeerConnection(pc);
+		peerConnection->onTrack([pc, cb](std::shared_ptr<Track> track) {
+			auto tr = emplaceTrack(track);
+
+			if (auto ptr = getUserPointer(pc)) {
+				rtcSetUserPointer(tr, *ptr);
+				cb(tr, *ptr);
+			}
+		});
+		return RTC_ERR_SUCCESS;
+	});
+}
+
 void setSSRC(Description::Media *description, uint32_t ssrc, const char *_name, const char *_msid, const char *_trackID) {
 
 	optional<string> name = nullopt;
