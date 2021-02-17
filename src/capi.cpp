@@ -297,6 +297,22 @@ int copyAndReturn(binary b, char *buffer, int size) {
 	return int(b.size());
 }
 
+int copyAndReturn(std::vector<int> b, int *buffer, int size) {
+	if (!buffer)
+		return int(b.size());
+
+	if (size < int(b.size()))
+		return RTC_ERR_TOO_SMALL;
+	memcpy(buffer, b.data(), size * sizeof(*buffer));
+	return int(b.size());
+
+}
+
+string lowercased(string str) {
+	std::transform(str.begin(), str.end(), str.begin(), [](unsigned char c) { return std::tolower(c); });
+	return str;
+}
+
 class plogAppender : public plog::IAppender {
 public:
 	plogAppender(rtcLogCallbackFunc cb = nullptr) { setCallback(cb); }
@@ -695,6 +711,23 @@ int rtcSetNeedsToSendRtcpSr(int id) {
 		auto sender = getRtcpSrReporter(id);
 		sender->setNeedsToReport();
 		return RTC_ERR_SUCCESS;
+	});
+}
+
+int rtcGetTrackPayloadTypesForCodec(int tr, const char * ccodec, int * buffer, int size) {
+	return wrap([&] {
+		auto track = getTrack(tr);
+		auto codec = lowercased(string(ccodec));
+		auto description = track->description();
+		std::vector<int> payloadTypes{};
+		payloadTypes.reserve(std::max(size, 0));
+		for (auto it = description.beginMaps(); it != description.endMaps(); it++) {
+			auto element = *it;
+			if (lowercased(element.second.format) == codec) {
+				payloadTypes.push_back(element.first);
+			}
+		}
+		return copyAndReturn(payloadTypes, buffer, size);
 	});
 }
 

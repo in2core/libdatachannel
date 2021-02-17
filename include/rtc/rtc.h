@@ -305,6 +305,14 @@ int rtcGetPreviousTrackSenderReportTimestamp(int id, uint32_t * timestamp);
 /// @param id Track id
 int rtcSetNeedsToSendRtcpSr(int id);
 
+/// Get all available payload types for given codec and stores them in buffer, does nothing if buffer is NULL
+/// @param tr Track ID
+/// @param ccodec Codec
+/// @param buffer Buffer to store payloads
+/// @param size Size of buffer
+/// @returns Number of payload types for given codec
+int rtcGetTrackPayloadTypesForCodec(int tr, const char * ccodec, int * buffer, int size);
+
 #endif // RTC_ENABLE_MEDIA
 
 // WebSocket
