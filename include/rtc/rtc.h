@@ -142,7 +142,6 @@ typedef void(RTC_API *rtcStateChangeCallbackFunc)(int pc, rtcState state, void *
 typedef void(RTC_API *rtcGatheringStateCallbackFunc)(int pc, rtcGatheringState state, void *ptr);
 typedef void(RTC_API *rtcSignalingStateCallbackFunc)(int pc, rtcSignalingState state, void *ptr);
 typedef void(RTC_API *rtcDataChannelCallbackFunc)(int pc, int dc, void *ptr);
-typedef void(RTC_API *rtcOnTrackCallbackFunc)(int tr, void *ptr);
 typedef void(RTC_API *rtcTrackCallbackFunc)(int pc, int tr, void *ptr);
 typedef void(RTC_API *rtcOpenCallbackFunc)(int id, void *ptr);
 typedef void(RTC_API *rtcClosedCallbackFunc)(int id, void *ptr);
@@ -210,11 +209,6 @@ RTC_EXPORT int rtcGetTrackDescription(int tr, char *buffer, int size);
 
 // Media
 #if RTC_ENABLE_MEDIA
-
-/// Add onTrack callback
-/// @param pc Peer conection ID
-/// @param cb Callback with track ID and user pointer
-int rtcSetOnTrack(int pc, rtcOnTrackCallbackFunc cb);
 
 /// Add track
 /// @param pc Peer connection id
