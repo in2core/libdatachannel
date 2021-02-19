@@ -463,6 +463,12 @@ int rtcDeleteDataChannel(int dc) {
 	});
 }
 
+int rtcIsDataChannelOpen(int dc) {
+	return wrap([dc] {
+		return getDataChannel(dc)->isOpen() ? RTC_ERR_SUCCESS : RTC_ERR_FAILURE;
+	});
+}
+
 #if RTC_ENABLE_MEDIA
 
 void setSSRC(Description::Media *description, uint32_t ssrc, const char *_name, const char *_msid, const char *_trackID) {

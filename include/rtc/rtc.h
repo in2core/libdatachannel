@@ -194,6 +194,7 @@ RTC_EXPORT int rtcCreateDataChannel(int pc, const char *label); // returns dc id
 RTC_EXPORT int rtcCreateDataChannelEx(int pc, const char *label,
                                       const rtcDataChannelInit *init); // returns dc id
 RTC_EXPORT int rtcDeleteDataChannel(int dc);
+RTC_EXPORT int rtcIsDataChannelOpen(int dc);
 
 RTC_EXPORT int rtcGetDataChannelStream(int dc);
 RTC_EXPORT int rtcGetDataChannelLabel(int dc, char *buffer, int size);
