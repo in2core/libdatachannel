@@ -223,6 +223,24 @@ int rtcGetSsrcsForTrack(int tr, uint32_t * buffer, int bufferSize);
 /// @param cnameSize CName buffer size
 int rtcGetCNameForSsrc(int tr, uint32_t ssrc, char * cname, int cnameSize);
 
+/// Get all SSRCs for given media type in given SDP
+/// @param mediaType Media type (audio/video)
+/// @param sdp SDP
+/// @param buffer Buffer (result)
+/// @param bufferSize Buffer size
+int rtcGetSsrcsForType(const char * mediaType, const char * sdp, uint32_t * buffer, int bufferSize);
+
+/// Set SSRC for given media type in given SDP
+/// @param mediaType Media type
+/// @param sdp SDP
+/// @param buffer Buffer (result)
+/// @param bufferSize Buffer size
+/// @param ssrc New SSRC
+/// @param _name CName (optional)
+/// @param _msid MSID (optional)
+/// @param _trackID Track id (optional)
+int rtcSetSsrcForType(const char * mediaType, const char * sdp, char * buffer, const int bufferSize,
+					  uint32_t ssrc, const char *_name, const char *_msid, const char *_trackID);
 
 /// Add track
 /// @param pc Peer connection id

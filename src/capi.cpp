@@ -930,6 +930,47 @@ int rtcGetCNameForSsrc(int tr, uint32_t ssrc, char * cname, int cnameSize) {
 	});
 }
 
+int rtcGetSsrcsForType(const char * mediaType, const char * sdp, uint32_t * buffer, int bufferSize) {
+	return wrap([&] {
+		auto type = lowercased(string(mediaType));
+		auto oldSDP = string(sdp);
+		auto description = Description(oldSDP, "unspec");
+		auto mediaCount = description.mediaCount();
+		for (auto i = 0; i < mediaCount; i++) {
+			if (std::holds_alternative<Description::Media *>(description.media(i))) {
+				auto media = std::get<Description::Media *>(description.media(i));
+				auto currentMediaType = lowercased(media->type());
+				if (currentMediaType == type) {
+					auto ssrcs = media->getSSRCs();
+					return copyAndReturn(ssrcs, buffer, bufferSize);
+				}
+			}
+		}
+		return 0;
+	});
+}
+
+int rtcSetSsrcForType(const char * mediaType, const char * sdp, char * buffer, const int bufferSize,
+					  uint32_t ssrc, const char *_name, const char *_msid, const char *_trackID) {
+	return wrap([&] {
+		auto type = lowercased(string(mediaType));
+		auto oldSDP = string(sdp);
+		auto description = Description(oldSDP, "unspec");
+		auto mediaCount = description.mediaCount();
+		for (auto i = 0; i < mediaCount; i++) {
+			if (std::holds_alternative<Description::Media *>(description.media(i))) {
+				auto media = std::get<Description::Media *>(description.media(i));
+				auto currentMediaType = lowercased(media->type());
+				if (currentMediaType == type) {
+					setSSRC(media, ssrc, _name, _msid, _trackID);
+					break;
+				}
+			}
+		}
+		return copyAndReturn(string(description), buffer, bufferSize);
+	});
+}
+
 int rtcSetRemoteDescription(int pc, const char *sdp, const char *type) {
 	return wrap([&] {
 		auto peerConnection = getPeerConnection(pc);
