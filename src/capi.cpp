@@ -297,7 +297,8 @@ int copyAndReturn(binary b, char *buffer, int size) {
 	return int(b.size());
 }
 
-int copyAndReturn(std::vector<int> b, int *buffer, int size) {
+template<typename T>
+int copyAndReturn(std::vector<T> b, T *buffer, int size) {
 	if (!buffer)
 		return int(b.size());
 
@@ -305,7 +306,6 @@ int copyAndReturn(std::vector<int> b, int *buffer, int size) {
 		return RTC_ERR_TOO_SMALL;
 	memcpy(buffer, b.data(), size * sizeof(*buffer));
 	return int(b.size());
-
 }
 
 string lowercased(string str) {
