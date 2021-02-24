@@ -856,6 +856,15 @@ std::vector<uint32_t> Description::Media::getSSRCs() {
 	return vec;
 }
 
+std::optional<std::string> Description::Media::getCNameForSsrc(uint32_t ssrc) {
+	for (auto &val : mAttributes) {
+		if (val.find("ssrc:") == 0 && val.find("cname:") != std::string::npos) {
+			return val.substr(val.find("cname:") + 6);
+		}
+	}
+	return std::nullopt;
+}
+
 std::map<int, Description::Media::RTPMap>::iterator Description::Media::beginMaps() {
 	return mRtpMap.begin();
 }

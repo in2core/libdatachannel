@@ -146,6 +146,7 @@ public:
 						 std::optional<string> msid = nullopt, std::optional<string> trackID = nullopt);
 		bool hasSSRC(uint32_t ssrc);
 		std::vector<uint32_t> getSSRCs();
+		std::optional<std::string> getCNameForSsrc(uint32_t ssrc);
 
 		void setBitrate(int bitrate);
 		int getBitrate() const;
