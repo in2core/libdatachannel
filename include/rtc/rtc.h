@@ -210,6 +210,19 @@ RTC_EXPORT int rtcGetTrackDescription(int tr, char *buffer, int size);
 
 // Media
 #if RTC_ENABLE_MEDIA
+/// Get all SSRCs for given track
+/// @param tr Track id
+/// @param buffer Buffer (result)
+/// @param bufferSize Buffer size
+int rtcGetSsrcsForTrack(int tr, uint32_t * buffer, int bufferSize);
+
+/// Get CName for SSRC
+/// @param tr Track id
+/// @param ssrc SSRC
+/// @param cname CName buffer (result)
+/// @param cnameSize CName buffer size
+int rtcGetCNameForSsrc(int tr, uint32_t ssrc, char * cname, int cnameSize);
+
 
 /// Add track
 /// @param pc Peer connection id

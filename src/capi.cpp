@@ -909,6 +909,27 @@ int rtcSetLocalDescription(int pc, const char *type) {
 	});
 }
 
+int rtcGetSsrcsForTrack(int tr, uint32_t * buffer, int bufferSize) {
+	return wrap([&] {
+		auto track = getTrack(tr);
+		auto ssrcs = track->description().getSSRCs();
+		return copyAndReturn(ssrcs, buffer, bufferSize);
+	});
+}
+
+int rtcGetCNameForSsrc(int tr, uint32_t ssrc, char * cname, int cnameSize) {
+	return wrap([&] {
+		auto track = getTrack(tr);
+		auto description = track->description();
+		auto optCName = description.getCNameForSsrc(ssrc);
+		if (optCName.has_value()) {
+			return copyAndReturn(optCName.value(), cname, cnameSize);
+		} else {
+			return 0;
+		}
+	});
+}
+
 int rtcSetRemoteDescription(int pc, const char *sdp, const char *type) {
 	return wrap([&] {
 		auto peerConnection = getPeerConnection(pc);
