@@ -830,6 +830,7 @@ void Description::Media::parseSdpLine(string_view line) {
 			// always added
 		} else if (key == "ssrc") {
 			mSsrcs.emplace_back(to_integer<uint32_t>(value));
+			mAttributes.emplace_back(attr);
 		} else {
 			Entry::parseSdpLine(line);
 		}
