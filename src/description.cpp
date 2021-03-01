@@ -829,8 +829,11 @@ void Description::Media::parseSdpLine(string_view line) {
 		} else if (key == "rtcp-mux") {
 			// always added
 		} else if (key == "ssrc") {
-			mSsrcs.emplace_back(to_integer<uint32_t>(value));
-			mAttributes.emplace_back(attr);
+            auto ssrc = to_integer<uint32_t>(value);
+            if (!hasSSRC(ssrc)) {
+                mSsrcs.emplace_back(ssrc);
+            }
+            mAttributes.emplace_back(attr);
 		} else {
 			Entry::parseSdpLine(line);
 		}
