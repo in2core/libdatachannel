@@ -19,7 +19,7 @@
 #ifndef RTC_ICE_CONFIGURATION_H
 #define RTC_ICE_CONFIGURATION_H
 
-#include "include.hpp"
+#include "common.hpp"
 #include "message.hpp"
 
 #include <vector>
@@ -64,12 +64,32 @@ struct RTC_CPP_EXPORT ProxyServer {
 	string password;
 };
 
+enum class CertificateType {
+	Default = RTC_CERTIFICATE_DEFAULT, // ECDSA
+	Ecdsa = RTC_CERTIFICATE_ECDSA,
+	Rsa = RTC_CERTIFICATE_RSA
+};
+
 struct RTC_CPP_EXPORT Configuration {
+	// ICE settings
 	std::vector<IceServer> iceServers;
-	std::optional<ProxyServer> proxyServer;
+	optional<ProxyServer> proxyServer; // libnice only
+	optional<string> bindAddress;      // libjuice only, default any
+
+	// Options
+	CertificateType certificateType = CertificateType::Default;
 	bool enableIceTcp = false;
+	bool disableAutoNegotiation = false;
+
+	// Port range
 	uint16_t portRangeBegin = 1024;
 	uint16_t portRangeEnd = 65535;
+
+	// MTU
+	optional<size_t> mtu;
+
+	// Local max message size at reception
+	optional<size_t> maxMessageSize;
 };
 
 } // namespace rtc

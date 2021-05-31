@@ -19,6 +19,8 @@
 
 #include "description.hpp"
 
+#include "impl/internals.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -28,7 +30,6 @@
 #include <sstream>
 #include <unordered_map>
 
-using std::shared_ptr;
 using std::chrono::system_clock;
 
 namespace {
@@ -39,6 +40,11 @@ using std::string_view;
 inline bool match_prefix(string_view str, string_view prefix) {
 	return str.size() >= prefix.size() &&
 	       std::mismatch(prefix.begin(), prefix.end(), str.begin()).first == prefix.end();
+}
+
+inline void trim_begin(string &str) {
+	str.erase(str.begin(),
+	          std::find_if(str.begin(), str.end(), [](char c) { return !std::isspace(c); }));
 }
 
 inline void trim_end(string &str) {
@@ -62,10 +68,25 @@ template <typename T> T to_integer(string_view s) {
 	const string str(s);
 	try {
 		return std::is_signed<T>::value ? T(std::stol(str)) : T(std::stoul(str));
-	}
-	catch(...) {
+	} catch (...) {
 		throw std::invalid_argument("Invalid integer \"" + str + "\" in description");
 	}
+}
+
+inline bool is_sha256_fingerprint(string_view f) {
+	if (f.size() != 32 * 3 - 1)
+		return false;
+
+	for (size_t i = 0; i < f.size(); ++i) {
+		if (i % 3 == 2) {
+			if (f[i] != ':')
+				return false;
+		} else {
+			if (!std::isxdigit(f[i]))
+				return false;
+		}
+	}
+	return true;
 }
 
 } // namespace
@@ -77,7 +98,7 @@ Description::Description(const string &sdp, Type type, Role role)
 	hintType(type);
 
 	int index = -1;
-	std::shared_ptr<Entry> current;
+	shared_ptr<Entry> current;
 	std::istringstream ss(sdp);
 	while (ss) {
 		string line;
@@ -107,10 +128,9 @@ Description::Description(const string &sdp, Type type, Role role)
 
 			} else if (key == "fingerprint") {
 				if (match_prefix(value, "sha-256 ")) {
-					mFingerprint = value.substr(8);
-					std::transform(mFingerprint->begin(), mFingerprint->end(),
-					               mFingerprint->begin(),
-					               [](char c) { return char(std::toupper(c)); });
+					string fingerprint{value.substr(8)};
+					trim_begin(fingerprint);
+					setFingerprint(std::move(fingerprint));
 				} else {
 					PLOG_WARNING << "Unknown SDP fingerprint format: " << value;
 				}
@@ -157,11 +177,11 @@ string Description::bundleMid() const {
 	return !mEntries.empty() ? mEntries[0]->mid() : "0";
 }
 
-std::optional<string> Description::iceUfrag() const { return mIceUfrag; }
+optional<string> Description::iceUfrag() const { return mIceUfrag; }
 
-std::optional<string> Description::icePwd() const { return mIcePwd; }
+optional<string> Description::icePwd() const { return mIcePwd; }
 
-std::optional<string> Description::fingerprint() const { return mFingerprint; }
+optional<string> Description::fingerprint() const { return mFingerprint; }
 
 bool Description::ended() const { return mEnded; }
 
@@ -174,6 +194,11 @@ void Description::hintType(Type type) {
 }
 
 void Description::setFingerprint(string fingerprint) {
+	if (!is_sha256_fingerprint(fingerprint))
+		throw std::invalid_argument("Invalid SHA256 fingerprint \"" + fingerprint + "\"");
+
+	std::transform(fingerprint.begin(), fingerprint.end(), fingerprint.begin(),
+	               [](char c) { return char(std::toupper(c)); });
 	mFingerprint.emplace(std::move(fingerprint));
 }
 
@@ -220,9 +245,8 @@ string Description::generateSdp(string_view eol) const {
 	sdp << "s=-" << eol;
 	sdp << "t=0 0" << eol;
 
-	// Bundle
-	// see Negotiating Media Multiplexing Using the Session Description Protocol
-	// https://tools.ietf.org/html/draft-ietf-mmusic-sdp-bundle-negotiation-54
+	// Bundle (RFC8843 Negotiating Media Multiplexing Using the Session Description Protocol)
+	// https://tools.ietf.org/html/rfc8843
 	sdp << "a=group:BUNDLE";
 	for (const auto &entry : mEntries)
 		sdp << ' ' << entry->mid();
@@ -320,9 +344,9 @@ string Description::generateApplicationSdp(string_view eol) const {
 	return sdp.str();
 }
 
-std::optional<Candidate> Description::defaultCandidate() const {
+optional<Candidate> Description::defaultCandidate() const {
 	// Return the first host candidate with highest priority, favoring IPv4
-	std::optional<Candidate> result;
+	optional<Candidate> result;
 	for (const auto &c : mCandidates) {
 		if (c.type() == Candidate::Type::Host) {
 			if (!result ||
@@ -392,6 +416,8 @@ int Description::addMedia(Application application) {
 
 int Description::addApplication(string mid) { return addMedia(Application(std::move(mid))); }
 
+const Description::Application *Description::application() const { return mApplication.get(); }
+
 Description::Application *Description::application() { return mApplication.get(); }
 
 int Description::addVideo(string mid, Direction dir) {
@@ -402,8 +428,12 @@ int Description::addAudio(string mid, Direction dir) {
 	return addMedia(Audio(std::move(mid), dir));
 }
 
-std::variant<Description::Media *, Description::Application *>
-Description::media(unsigned int index) {
+void Description::clearMedia() {
+	mEntries.clear();
+	mApplication.reset();
+}
+
+variant<Description::Media *, Description::Application *> Description::media(unsigned int index) {
 	if (index >= mEntries.size())
 		throw std::out_of_range("Media index out of range");
 
@@ -421,7 +451,7 @@ Description::media(unsigned int index) {
 	}
 }
 
-std::variant<const Description::Media *, const Description::Application *>
+variant<const Description::Media *, const Description::Application *>
 Description::media(unsigned int index) const {
 	if (index >= mEntries.size())
 		throw std::out_of_range("Media index out of range");
@@ -524,21 +554,22 @@ Description::Entry::removeAttribute(std::vector<string>::iterator it) {
 	return mAttributes.erase(it);
 }
 
-void Description::Media::addSSRC(uint32_t ssrc, std::optional<string> name,
-								 std::optional<string> msid, std::optional<string> trackID) {
+void Description::Media::addSSRC(uint32_t ssrc, optional<string> name, optional<string> msid,
+                                 optional<string> trackID) {
 	if (name)
 		mAttributes.emplace_back("ssrc:" + std::to_string(ssrc) + " cname:" + *name);
 	else
 		mAttributes.emplace_back("ssrc:" + std::to_string(ssrc));
 
 	if (msid)
-		mAttributes.emplace_back("ssrc:" + std::to_string(ssrc) + " msid:" + *msid + " " + trackID.value_or(*msid));
+		mAttributes.emplace_back("ssrc:" + std::to_string(ssrc) + " msid:" + *msid + " " +
+		                         trackID.value_or(*msid));
 
 	mSsrcs.emplace_back(ssrc);
 }
 
-void Description::Media::replaceSSRC(uint32_t oldSSRC, uint32_t ssrc, std::optional<string> name,
-									 std::optional<string> msid, std::optional<string> trackID) {
+void Description::Media::replaceSSRC(uint32_t oldSSRC, uint32_t ssrc, optional<string> name,
+                                     optional<string> msid, optional<string> trackID) {
 	auto it = mAttributes.begin();
 	while (it != mAttributes.end()) {
 		if (it->find("ssrc:" + std::to_string(oldSSRC)) == 0) {
@@ -709,8 +740,7 @@ void Description::Media::removeFormat(const string &fmt) {
 	}
 }
 
-void Description::Video::addVideoCodec(int payloadType, string codec,
-                                       std::optional<string> profile) {
+void Description::Video::addVideoCodec(int payloadType, string codec, optional<string> profile) {
 	RTPMap map(std::to_string(payloadType) + ' ' + codec + "/90000");
 	map.addFB("nack");
 	map.addFB("nack pli");
@@ -734,8 +764,7 @@ void Description::Video::addVideoCodec(int payloadType, string codec,
 	// ";rtx-time=3000"); addRTPMap(rtx);
 }
 
-void Description::Audio::addAudioCodec(int payloadType, string codec,
-                                       std::optional<string> profile) {
+void Description::Audio::addAudioCodec(int payloadType, string codec, optional<string> profile) {
 	// TODO This 48000/2 should be parameterized
 	RTPMap map(std::to_string(payloadType) + ' ' + codec + "/48000/2");
 	if (profile)
@@ -750,7 +779,7 @@ void Description::Media::addRTXCodec(unsigned int payloadType, unsigned int orig
 	addRTPMap(map);
 }
 
-void Description::Video::addH264Codec(int pt, std::optional<string> profile) {
+void Description::Video::addH264Codec(int pt, optional<string> profile) {
 	addVideoCodec(pt, "H264", profile);
 }
 
@@ -848,16 +877,7 @@ void Description::Media::addRTPMap(const Description::Media::RTPMap &map) {
 	mRtpMap.emplace(map.pt, map);
 }
 
-std::vector<uint32_t> Description::Media::getSSRCs() {
-	std::vector<uint32_t> vec;
-	for (auto &val : mAttributes) {
-		PLOG_DEBUG << val;
-		if (val.find("ssrc:") == 0) {
-			vec.emplace_back(to_integer<uint32_t>(val.substr(5, val.find(" "))));
-		}
-	}
-	return vec;
-}
+std::vector<uint32_t> Description::Media::getSSRCs() { return mSsrcs; }
 
 std::optional<std::string> Description::Media::getCNameForSsrc(uint32_t ssrc) {
 	for (auto &val : mAttributes) {
@@ -926,7 +946,7 @@ void Description::Media::RTPMap::setMLine(string_view mline) {
 Description::Audio::Audio(string mid, Direction dir)
     : Media("audio 9 UDP/TLS/RTP/SAVPF", std::move(mid), dir) {}
 
-void Description::Audio::addOpusCodec(int payloadType, std::optional<string> profile) {
+void Description::Audio::addOpusCodec(int payloadType, optional<string> profile) {
 	addAudioCodec(payloadType, "OPUS", profile);
 }
 
@@ -973,18 +993,17 @@ std::ostream &operator<<(std::ostream &out, rtc::Description::Type type) {
 
 std::ostream &operator<<(std::ostream &out, rtc::Description::Role role) {
 	using Role = rtc::Description::Role;
-	const char *str;
 	// Used for SDP generation, do not change
 	switch (role) {
 	case Role::Active:
-		str = "active";
+		out << "active";
 		break;
 	case Role::Passive:
-		str = "passive";
+		out << "passive";
 		break;
 	default:
-		str = "actpass";
+		out << "actpass";
 		break;
 	}
-	return out << str;
+	return out;
 }

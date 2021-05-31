@@ -1,24 +1,27 @@
-/*
- * libdatachannel streamer example
+/**
  * Copyright (c) 2020 Filip Klembara (in2core)
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
- * This program is distributed in the hope that it will be useful,
+ * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #if RTC_ENABLE_MEDIA
 
 #include "nalunit.hpp"
+
+#include "impl/internals.hpp"
+
 #include <cmath>
 
 namespace rtc {
@@ -34,7 +37,7 @@ NalUnitFragmentA::NalUnitFragmentA(FragmentType type, bool forbiddenBit, uint8_t
 	copy(data.begin(), data.end(), begin() + 2);
 }
 
-std::vector<std::shared_ptr<NalUnitFragmentA>> NalUnitFragmentA::fragmentsFrom(std::shared_ptr<NalUnit> nalu,
+std::vector<shared_ptr<NalUnitFragmentA>> NalUnitFragmentA::fragmentsFrom(shared_ptr<NalUnit> nalu,
 																			   uint16_t maximumFragmentSize) {
 	assert(nalu->size() > maximumFragmentSize);
 	if (nalu->size() <= maximumFragmentSize) {
@@ -50,7 +53,7 @@ std::vector<std::shared_ptr<NalUnitFragmentA>> NalUnitFragmentA::fragmentsFrom(s
 	uint8_t nri = nalu->nri() & 0x03;
 	uint8_t naluType = nalu->unitType() & 0x1F;
 	auto payload = nalu->payload();
-	vector<std::shared_ptr<NalUnitFragmentA>> result{};
+	vector<shared_ptr<NalUnitFragmentA>> result{};
 	uint64_t offset = 0;
 	while (offset < payload.size()) {
 		vector<byte> fragmentData;
@@ -90,11 +93,11 @@ void NalUnitFragmentA::setFragmentType(FragmentType type) {
 	}
 }
 
-std::vector<std::shared_ptr<binary>> NalUnits::generateFragments(uint16_t maximumFragmentSize) {
-	vector<std::shared_ptr<binary>> result{};
+std::vector<shared_ptr<binary>> NalUnits::generateFragments(uint16_t maximumFragmentSize) {
+	vector<shared_ptr<binary>> result{};
 	for (auto nalu : *this) {
 		if (nalu->size() > maximumFragmentSize) {
-			std::vector<std::shared_ptr<NalUnitFragmentA>> fragments =
+			std::vector<shared_ptr<NalUnitFragmentA>> fragments =
 			NalUnitFragmentA::fragmentsFrom(nalu, maximumFragmentSize);
 			result.insert(result.end(), fragments.begin(), fragments.end());
 		} else {

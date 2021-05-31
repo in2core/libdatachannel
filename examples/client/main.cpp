@@ -54,20 +54,20 @@ shared_ptr<PeerConnection> createPeerConnection(const Configuration &config,
 string randomId(size_t length);
 
 int main(int argc, char **argv) try {
-	auto params = std::make_unique<Cmdline>(argc, argv);
+	Cmdline params(argc, argv);
 
 	rtc::InitLogger(LogLevel::Info);
 
 	Configuration config;
 	string stunServer = "";
-	if (params->noStun()) {
+	if (params.noStun()) {
 		cout << "No STUN server is configured. Only local hosts and public IP addresses supported."
 		     << endl;
 	} else {
-		if (params->stunServer().substr(0, 5).compare("stun:") != 0) {
+		if (params.stunServer().substr(0, 5).compare("stun:") != 0) {
 			stunServer = "stun:";
 		}
-		stunServer += params->stunServer() + ":" + to_string(params->stunPort());
+		stunServer += params.stunServer() + ":" + to_string(params.stunPort());
 		cout << "Stun server is " << stunServer << endl;
 		config.iceServers.emplace_back(stunServer);
 	}
@@ -129,11 +129,11 @@ int main(int argc, char **argv) try {
 	});
 
 	string wsPrefix = "";
-	if (params->webSocketServer().substr(0, 5).compare("ws://") != 0) {
+	if (params.webSocketServer().substr(0, 5).compare("ws://") != 0) {
 		wsPrefix = "ws://";
 	}
-	const string url = wsPrefix + params->webSocketServer() + ":" +
-	                   to_string(params->webSocketPort()) + "/" + localId;
+	const string url = wsPrefix + params.webSocketServer() + ":" +
+	                   to_string(params.webSocketPort()) + "/" + localId;
 	cout << "Url is " << url << endl;
 	ws->open(url);
 
@@ -222,17 +222,20 @@ shared_ptr<PeerConnection> createPeerConnection(const Configuration &config,
 		cout << "DataChannel from " << id << " received with label \"" << dc->label() << "\""
 		     << endl;
 
+		dc->onOpen([wdc = make_weak_ptr(dc)]() {
+			if (auto dc = wdc.lock())
+				dc->send("Hello from " + localId);
+		});
+
 		dc->onClosed([id]() { cout << "DataChannel from " << id << " closed" << endl; });
 
-		dc->onMessage([id, wdc = make_weak_ptr(dc)](variant<binary, string> data) {
+		dc->onMessage([id](variant<binary, string> data) {
 			if (holds_alternative<string>(data))
 				cout << "Message from " << id << " received: " << get<string>(data) << endl;
 			else
 				cout << "Binary message from " << id
 				     << " received, size=" << get<binary>(data).size() << endl;
 		});
-
-		dc->send("Hello from " + localId);
 
 		dataChannelMap.emplace(id, dc);
 	});

@@ -21,13 +21,10 @@
 #define RTC_DESCRIPTION_H
 
 #include "candidate.hpp"
-#include "include.hpp"
+#include "common.hpp"
 
 #include <iostream>
 #include <map>
-#include <memory>
-#include <optional>
-#include <variant>
 #include <vector>
 
 namespace rtc {
@@ -45,7 +42,14 @@ class RTC_CPP_EXPORT Description {
 public:
 	enum class Type { Unspec, Offer, Answer, Pranswer, Rollback };
 	enum class Role { ActPass, Passive, Active };
-	enum class Direction { SendOnly, RecvOnly, SendRecv, Inactive, Unknown };
+
+	enum class Direction {
+		SendOnly = RTC_DIRECTION_SENDONLY,
+		RecvOnly = RTC_DIRECTION_RECVONLY,
+		SendRecv = RTC_DIRECTION_SENDRECV,
+		Inactive = RTC_DIRECTION_INACTIVE,
+		Unknown = RTC_DIRECTION_UNKNOWN
+	};
 
 	Description(const string &sdp, Type type = Type::Unspec, Role role = Role::ActPass);
 	Description(const string &sdp, string typeString);
@@ -54,9 +58,9 @@ public:
 	string typeString() const;
 	Role role() const;
 	string bundleMid() const;
-	std::optional<string> iceUfrag() const;
-	std::optional<string> icePwd() const;
-	std::optional<string> fingerprint() const;
+	optional<string> iceUfrag() const;
+	optional<string> icePwd() const;
+	optional<string> fingerprint() const;
 	bool ended() const;
 
 	void hintType(Type type);
@@ -116,16 +120,16 @@ public:
 		void hintSctpPort(uint16_t port) { mSctpPort = mSctpPort.value_or(port); }
 		void setMaxMessageSize(size_t size) { mMaxMessageSize = size; }
 
-		std::optional<uint16_t> sctpPort() const { return mSctpPort; }
-		std::optional<size_t> maxMessageSize() const { return mMaxMessageSize; }
+		optional<uint16_t> sctpPort() const { return mSctpPort; }
+		optional<size_t> maxMessageSize() const { return mMaxMessageSize; }
 
 		virtual void parseSdpLine(string_view line) override;
 
 	private:
 		virtual string generateSdpLines(string_view eol) const override;
 
-		std::optional<uint16_t> mSctpPort;
-		std::optional<size_t> mMaxMessageSize;
+		optional<uint16_t> mSctpPort;
+		optional<size_t> mMaxMessageSize;
 	};
 
 	// Media (non-data)
@@ -140,10 +144,10 @@ public:
 
 		void removeFormat(const string &fmt);
 
-		void addSSRC(uint32_t ssrc, std::optional<string> name,
-					 std::optional<string> msid = nullopt, std::optional<string> trackID = nullopt);
-		void replaceSSRC(uint32_t oldSSRC, uint32_t ssrc, std::optional<string> name,
-						 std::optional<string> msid = nullopt, std::optional<string> trackID = nullopt);
+		void addSSRC(uint32_t ssrc, optional<string> name,
+					 optional<string> msid = nullopt, optional<string> trackID = nullopt);
+		void replaceSSRC(uint32_t oldSSRC, uint32_t ssrc, optional<string> name,
+						 optional<string> msid = nullopt, optional<string> trackID = nullopt);
 		bool hasSSRC(uint32_t ssrc);
 		std::vector<uint32_t> getSSRCs();
 		std::optional<std::string> getCNameForSsrc(uint32_t ssrc);
@@ -204,10 +208,10 @@ public:
 		Audio(string mid = "audio", Direction dir = Direction::SendOnly);
 
 		void addAudioCodec(int payloadType, string codec,
-		                   std::optional<string> profile = std::nullopt);
+		                   optional<string> profile = std::nullopt);
 
 		void addOpusCodec(int payloadType,
-		                  std::optional<string> profile = DEFAULT_OPUS_AUDIO_PROFILE);
+		                  optional<string> profile = DEFAULT_OPUS_AUDIO_PROFILE);
 	};
 
 	class RTC_CPP_EXPORT Video : public Media {
@@ -215,10 +219,10 @@ public:
 		Video(string mid = "video", Direction dir = Direction::SendOnly);
 
 		void addVideoCodec(int payloadType, string codec,
-		                   std::optional<string> profile = std::nullopt);
+		                   optional<string> profile = std::nullopt);
 
 		void addH264Codec(int payloadType,
-		                  std::optional<string> profile = DEFAULT_H264_VIDEO_PROFILE);
+		                  optional<string> profile = DEFAULT_H264_VIDEO_PROFILE);
 		void addVP8Codec(int payloadType);
 		void addVP9Codec(int payloadType);
 	};
@@ -232,19 +236,21 @@ public:
 	int addApplication(string mid = "data");
 	int addVideo(string mid = "video", Direction dir = Direction::SendOnly);
 	int addAudio(string mid = "audio", Direction dir = Direction::SendOnly);
+	void clearMedia();
 
-	std::variant<Media *, Application *> media(unsigned int index);
-	std::variant<const Media *, const Application *> media(unsigned int index) const;
+	variant<Media *, Application *> media(unsigned int index);
+	variant<const Media *, const Application *> media(unsigned int index) const;
 	unsigned int mediaCount() const;
 
+	const Application *application() const;
 	Application *application();
 
 	static Type stringToType(const string &typeString);
 	static string typeToString(Type type);
 
 private:
-	std::optional<Candidate> defaultCandidate() const;
-	std::shared_ptr<Entry> createEntry(string mline, string mid, Direction dir);
+	optional<Candidate> defaultCandidate() const;
+	shared_ptr<Entry> createEntry(string mline, string mid, Direction dir);
 	void removeApplication();
 
 	Type mType;
@@ -253,12 +259,12 @@ private:
 	Role mRole;
 	string mUsername;
 	string mSessionId;
-	std::optional<string> mIceUfrag, mIcePwd;
-	std::optional<string> mFingerprint;
+	optional<string> mIceUfrag, mIcePwd;
+	optional<string> mFingerprint;
 
 	// Entries
-	std::vector<std::shared_ptr<Entry>> mEntries;
-	std::shared_ptr<Application> mApplication;
+	std::vector<shared_ptr<Entry>> mEntries;
+	shared_ptr<Application> mApplication;
 
 	// Candidates
 	std::vector<Candidate> mCandidates;

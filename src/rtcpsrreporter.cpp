@@ -1,23 +1,27 @@
 /**
  * Copyright (c) 2020 Filip Klembara (in2core)
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
- * This program is distributed in the hope that it will be useful,
+ * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #if RTC_ENABLE_MEDIA
 
 #include "rtcpsrreporter.hpp"
+
+#include <cmath>
+#include <cassert>
 
 namespace rtc {
 
@@ -50,7 +54,7 @@ void RtcpSrReporter::addToReport(RTP *rtp, uint32_t rtpSize) {
 	payloadOctets += rtpSize - rtp->getSize();
 }
 
-RtcpSrReporter::RtcpSrReporter(std::shared_ptr<RtpPacketizationConfig> rtpConfig)
+RtcpSrReporter::RtcpSrReporter(shared_ptr<RtpPacketizationConfig> rtpConfig)
 : MediaHandlerElement(), rtpConfig(rtpConfig) {}
 
 uint64_t RtcpSrReporter::secondsToNTP(double seconds) {
@@ -60,8 +64,8 @@ uint64_t RtcpSrReporter::secondsToNTP(double seconds) {
 void RtcpSrReporter::setNeedsToReport() { needsToReport = true; }
 
 message_ptr RtcpSrReporter::getSenderReport(uint32_t timestamp) {
-	auto srSize = RTCP_SR::size(0);
-	auto msg = make_message(srSize + RTCP_SDES::size({{uint8_t(rtpConfig->cname.size())}}),
+	auto srSize = RTCP_SR::Size(0);
+	auto msg = make_message(srSize + RTCP_SDES::Size({{uint8_t(rtpConfig->cname.size())}}),
 							Message::Type::Control);
 	auto sr = reinterpret_cast<RTCP_SR *>(msg->data());
 	auto timestamp_s = rtpConfig->timestampToSeconds(timestamp);

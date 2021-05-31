@@ -83,7 +83,7 @@ static void RTC_API closedCallback(int id, void *ptr) {
 static void RTC_API trackCallback(int pc, int tr, void *ptr) {
 	Peer *peer = (Peer *)ptr;
 	peer->tr = tr;
-	peer->connected = true;
+	rtcSetOpenCallback(tr, openCallback);
 	rtcSetClosedCallback(tr, closedCallback);
 
 	char buffer[1024];
@@ -175,10 +175,6 @@ int test_capi_track_main() {
 	deletePeer(peer1);
 	sleep(1);
 	deletePeer(peer2);
-	sleep(1);
-
-	// You may call rtcCleanup() when finished to free static resources
-	rtcCleanup();
 	sleep(1);
 
 	printf("Success\n");

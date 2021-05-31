@@ -18,6 +18,8 @@
 
 #include "candidate.hpp"
 
+#include "impl/internals.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -91,7 +93,7 @@ void Candidate::parse(string candidate) {
 	                                        {"so", TransportType::TcpSo}};
 
 	const std::array prefixes{"a=", "candidate:"};
-	for (const string &prefix : prefixes)
+	for (string prefix : prefixes)
 		if (match_prefix(candidate, prefix))
 			candidate.erase(0, prefix.size());
 
@@ -219,7 +221,9 @@ Candidate::operator string() const {
 }
 
 bool Candidate::operator==(const Candidate &other) const {
-	return mFoundation == other.mFoundation;
+	return (mFoundation == other.mFoundation &&
+	        mService == other.mService &&
+	        mNode == other.mNode);
 }
 
 bool Candidate::operator!=(const Candidate &other) const {
@@ -230,11 +234,11 @@ bool Candidate::isResolved() const { return mFamily != Family::Unresolved; }
 
 Candidate::Family Candidate::family() const { return mFamily; }
 
-std::optional<string> Candidate::address() const {
+optional<string> Candidate::address() const {
 	return isResolved() ? std::make_optional(mAddress) : nullopt;
 }
 
-std::optional<uint16_t> Candidate::port() const {
+optional<uint16_t> Candidate::port() const {
 	return isResolved() ? std::make_optional(mPort) : nullopt;
 }
 

@@ -89,7 +89,7 @@ int main(int argc, char **argv) {
 	}
 #endif
 #if RTC_ENABLE_WEBSOCKET
-// TODO: Disabled because echo.websocket.org is down
+// TODO: Temporarily disabled as the echo service is unreliable
 /*
 	this_thread::sleep_for(1s);
 	try {

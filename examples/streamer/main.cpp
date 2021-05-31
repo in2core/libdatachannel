@@ -70,7 +70,7 @@ DispatchQueue MainThread("Main");
 /// Audio and video stream
 optional<shared_ptr<Stream>> avStream = nullopt;
 
-const string defaultRootDirectory = "../../../../examples/streamer/samples/";
+const string defaultRootDirectory = "../../../examples/streamer/samples/";
 const string defaultH264SamplesDirectory = defaultRootDirectory + "h264/";
 string h264SamplesDirectory = defaultH264SamplesDirectory;
 const string defaultOpusSamplesDirectory = defaultRootDirectory + "opus/";
@@ -161,12 +161,13 @@ int main(int argc, char **argv) try {
     string stunServer = "stun:stun.l.google.com:19302";
     cout << "Stun server is " << stunServer << endl;
     config.iceServers.emplace_back(stunServer);
-
+    config.disableAutoNegotiation = true;
 
     string localId = "server";
     cout << "The local ID is: " << localId << endl;
 
     auto ws = make_shared<WebSocket>();
+
     ws->onOpen([]() { cout << "WebSocket connected, signaling ready" << endl; });
 
     ws->onClosed([]() { cout << "WebSocket closed" << endl; });
@@ -217,19 +218,19 @@ shared_ptr<ClientTrackData> addVideo(const shared_ptr<PeerConnection> pc, const 
     video.addSSRC(ssrc, cname, msid, cname);
     auto track = pc->addTrack(video);
     // create RTP configuration
-    auto rtpConfig = shared_ptr<RtpPacketizationConfig>(new RtpPacketizationConfig(ssrc, cname, payloadType, H264RtpPacketizer::defaultClockRate));
+    auto rtpConfig = make_shared<RtpPacketizationConfig>(ssrc, cname, payloadType, H264RtpPacketizer::defaultClockRate);
     // create packetizer
-	auto packetizer = shared_ptr<H264RtpPacketizer>(new H264RtpPacketizer(H264RtpPacketizer::Separator::Length, rtpConfig));
-	// create H264 handler
-	shared_ptr<H264PacketizationHandler> h264Handler(new H264PacketizationHandler(packetizer));
-	// add RTCP SR handler
-	auto srReporter = make_shared<RtcpSrReporter>(rtpConfig);
-	h264Handler->addToChain(srReporter);
-	// add RTCP NACK handler
-	auto nackResponder = make_shared<RtcpNackResponder>();
-	h264Handler->addToChain(nackResponder);
+    auto packetizer = make_shared<H264RtpPacketizer>(H264RtpPacketizer::Separator::Length, rtpConfig);
+    // create H264 handler
+    auto h264Handler = make_shared<H264PacketizationHandler>(packetizer);
+    // add RTCP SR handler
+    auto srReporter = make_shared<RtcpSrReporter>(rtpConfig);
+    h264Handler->addToChain(srReporter);
+    // add RTCP NACK handler
+    auto nackResponder = make_shared<RtcpNackResponder>();
+    h264Handler->addToChain(nackResponder);
     // set handler
-    track->setRtcpHandler(h264Handler);
+    track->setMediaHandler(h264Handler);
     track->onOpen(onOpen);
     auto trackData = make_shared<ClientTrackData>(track, srReporter);
     return trackData;
@@ -241,19 +242,19 @@ shared_ptr<ClientTrackData> addAudio(const shared_ptr<PeerConnection> pc, const 
     audio.addSSRC(ssrc, cname, msid, cname);
     auto track = pc->addTrack(audio);
     // create RTP configuration
-    auto rtpConfig = shared_ptr<RtpPacketizationConfig>(new RtpPacketizationConfig(ssrc, cname, payloadType, OpusRtpPacketizer::defaultClockRate));
+    auto rtpConfig = make_shared<RtpPacketizationConfig>(ssrc, cname, payloadType, OpusRtpPacketizer::defaultClockRate);
     // create packetizer
     auto packetizer = make_shared<OpusRtpPacketizer>(rtpConfig);
-	// create opus handler
+    // create opus handler
     auto opusHandler = make_shared<OpusPacketizationHandler>(packetizer);
-	// add RTCP SR handler
-	auto srReporter = make_shared<RtcpSrReporter>(rtpConfig);
-	opusHandler->addToChain(srReporter);
-	// add RTCP NACK handler
-	auto nackResponder = make_shared<RtcpNackResponder>();
-	opusHandler->addToChain(nackResponder);
+    // add RTCP SR handler
+    auto srReporter = make_shared<RtcpSrReporter>(rtpConfig);
+    opusHandler->addToChain(srReporter);
+    // add RTCP NACK handler
+    auto nackResponder = make_shared<RtcpNackResponder>();
+    opusHandler->addToChain(nackResponder);
     // set handler
-    track->setRtcpHandler(opusHandler);
+    track->setMediaHandler(opusHandler);
     track->onOpen(onOpen);
     auto trackData = make_shared<ClientTrackData>(track, srReporter);
     return trackData;
@@ -263,9 +264,8 @@ shared_ptr<ClientTrackData> addAudio(const shared_ptr<PeerConnection> pc, const 
 shared_ptr<Client> createPeerConnection(const Configuration &config,
                                                 weak_ptr<WebSocket> wws,
                                                 string id) {
-
     auto pc = make_shared<PeerConnection>(config);
-    shared_ptr<Client> client(new Client(pc));
+    auto client = make_shared<Client>(pc);
 
     pc->onStateChange([id](PeerConnection::State state) {
         cout << "State: " << state << endl;
@@ -316,7 +316,7 @@ shared_ptr<Client> createPeerConnection(const Configuration &config,
         cout << "Audio from " << id << " opened" << endl;
     });
 
-    auto dc = pc->addDataChannel("ping-pong");
+    auto dc = pc->createDataChannel("ping-pong");
     dc->onOpen([id, wdc = make_weak_ptr(dc)]() {
         if (auto dc = wdc.lock()) {
             dc->send("Ping");
