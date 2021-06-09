@@ -547,6 +547,18 @@ void setSSRC(Description::Media *description, uint32_t ssrc, const char *_name, 
 	description->addSSRC(ssrc, name, msid, trackID);
 }
 
+std::vector<rtcChainedMessagesProductElement> chainedMessagesProductToCVariant(ChainedMessagesProduct messages) {
+	auto allMessages = std::vector<rtcChainedMessagesProductElement>(messages->size());
+	for(unsigned long i = 0; i < messages->size(); i++) {
+		auto message = messages->at(i);
+		rtcChainedMessagesProductElement element;
+		element.message = (uint8_t*) message->data();
+		element.size = message->size();
+		allMessages[i] = element;
+	}
+	return allMessages;
+}
+
 int rtcSetH264PacketizationHandler(int tr, const rtcPacketizationHandlerInit *init) {
 	return wrap([&] {
 		auto track = getTrack(tr);
@@ -579,6 +591,52 @@ int rtcSetOpusPacketizationHandler(int tr, const rtcPacketizationHandlerInit *in
 		emplaceRtpConfig(rtpConfig, tr);
 		// set handler
 		track->setMediaHandler(opusHandler);
+		return RTC_ERR_SUCCESS;
+	});
+}
+
+int rtcChainReadOnlyMediaMessageHandler(int tr,
+										void * userPointer,
+										rtcIncomingBinaryMessageCallback incomingBinaryMessage,
+										rtcIncomingControlMessageCallback incomingControlMessage,
+										rtcOutgoingBinaryMessageCallback outgoingBinaryMessage,
+										rtcOutgoingControlMessageCallback outgoingControlMessage) {
+	return wrap([&] {
+		auto chainableHandler = getMediaChainableHandler(tr);
+		auto handler = std::make_shared<GenericMediaHandlerElement>();
+		if (incomingBinaryMessage) {
+			handler->onProcessIncomingBinaryMessage([=](ChainedMessagesProduct messages) {
+				auto cMessages = chainedMessagesProductToCVariant(messages);
+				incomingBinaryMessage(tr, userPointer, cMessages.data(), cMessages.size());
+				return ChainedIncomingProduct(messages);
+			});
+		}
+		if (incomingControlMessage) {
+			handler->onProcessIncomingControlMessage([=](message_ptr control) {
+				uint8_t * controlMessage = control ? ((uint8_t*) control->data()) : NULL;
+				unsigned long controlMessageSize = control ? control->size() : 0;
+				incomingControlMessage(tr, userPointer, controlMessage, controlMessageSize);
+				return ChainedIncomingControlProduct(control);
+			});
+		}
+		if (outgoingBinaryMessage) {
+			handler->onProcessOutgoingBinaryMessage([=](ChainedMessagesProduct messages, message_ptr control) {
+				auto cMessages = chainedMessagesProductToCVariant(messages);
+				uint8_t * controlMessage = control ? ((uint8_t*) control->data()) : NULL;
+				unsigned long controlMessageSize = control ? control->size() : 0;
+				outgoingBinaryMessage(tr, userPointer, cMessages.data(), cMessages.size(), controlMessage, controlMessageSize);
+				return ChainedOutgoingProduct(messages, control);
+			});
+		}
+		if (outgoingControlMessage) {
+			handler->onProcessOutgoingControlMessage([=](message_ptr control) {
+				uint8_t * controlMessage = control ? ((uint8_t*) control->data()) : NULL;
+				unsigned long controlMessageSize = control ? control->size() : 0;
+				outgoingControlMessage(tr, userPointer, controlMessage, controlMessageSize);
+				return control;
+			});
+		}
+		chainableHandler->addToChain(handler);
 		return RTC_ERR_SUCCESS;
 	});
 }
