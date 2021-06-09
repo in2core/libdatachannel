@@ -1,23 +1,28 @@
 /**
  * Copyright (c) 2020 Filip Klembara (in2core)
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
- * This program is distributed in the hope that it will be useful,
+ * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #if RTC_ENABLE_MEDIA
 
 #include "mediahandlerelement.hpp"
+
+#include "impl/internals.hpp"
+
+#include <cassert>
 
 namespace rtc {
 
@@ -36,7 +41,7 @@ ChainedOutgoingProduct::ChainedOutgoingProduct(ChainedMessagesProduct messages, 
 ChainedIncomingProduct::ChainedIncomingProduct(ChainedMessagesProduct incoming, ChainedMessagesProduct outgoing)
 : incoming(incoming), outgoing(outgoing) { }
 
-ChainedIncomingControlProduct::ChainedIncomingControlProduct(message_ptr incoming, std::optional<ChainedOutgoingProduct> outgoing)
+ChainedIncomingControlProduct::ChainedIncomingControlProduct(message_ptr incoming, optional<ChainedOutgoingProduct> outgoing)
 : incoming(incoming), outgoing(outgoing) { }
 
 MediaHandlerElement::MediaHandlerElement() { }
@@ -63,7 +68,7 @@ void MediaHandlerElement::recursiveRemoveChain() {
 	removeFromChain();
 }
 
-std::optional<ChainedOutgoingProduct> MediaHandlerElement::processOutgoingResponse(ChainedOutgoingProduct messages) {
+optional<ChainedOutgoingProduct> MediaHandlerElement::processOutgoingResponse(ChainedOutgoingProduct messages) {
 	if (messages.messages) {
 		if (upstream) {
 			auto msgs = upstream->formOutgoingBinaryMessage(ChainedOutgoingProduct(messages.messages, messages.control));
@@ -93,7 +98,7 @@ std::optional<ChainedOutgoingProduct> MediaHandlerElement::processOutgoingRespon
 	}
 }
 
-void MediaHandlerElement::prepareAndSendResponse(std::optional<ChainedOutgoingProduct> outgoing, std::function<bool (ChainedOutgoingProduct)> send) {
+void MediaHandlerElement::prepareAndSendResponse(optional<ChainedOutgoingProduct> outgoing, std::function<bool (ChainedOutgoingProduct)> send) {
 	if (outgoing.has_value()) {
 		auto message = outgoing.value();
 		auto response = processOutgoingResponse(message);
@@ -152,7 +157,7 @@ message_ptr MediaHandlerElement::formOutgoingControlMessage(message_ptr message)
 	}
 }
 
-std::optional<ChainedOutgoingProduct> MediaHandlerElement::formOutgoingBinaryMessage(ChainedOutgoingProduct product) {
+optional<ChainedOutgoingProduct> MediaHandlerElement::formOutgoingBinaryMessage(ChainedOutgoingProduct product) {
 	assert(product.messages && !product.messages->empty());
 	auto newProduct = processOutgoingBinaryMessage(product.messages, product.control);
 	assert(!product.control || newProduct.control);
@@ -188,7 +193,7 @@ ChainedOutgoingProduct MediaHandlerElement::processOutgoingBinaryMessage(Chained
 	return {messages, control};
 }
 
-std::shared_ptr<MediaHandlerElement> MediaHandlerElement::chainWith(std::shared_ptr<MediaHandlerElement> upstream) {
+shared_ptr<MediaHandlerElement> MediaHandlerElement::chainWith(shared_ptr<MediaHandlerElement> upstream) {
 	assert(this->upstream == nullptr);
 	assert(upstream->downstream == nullptr);
 	this->upstream = upstream;
