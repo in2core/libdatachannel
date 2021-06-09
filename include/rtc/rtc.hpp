@@ -41,6 +41,7 @@
 #include "rtcpnackresponder.hpp"
 #include "rtcpreceivingsession.hpp"
 #include "rtcpsrreporter.hpp"
+#include "genericmediahandlerelement.hpp"
 
 // Opus/h264 streaming
 #include "h264packetizationhandler.hpp"
