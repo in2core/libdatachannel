@@ -1,4 +1,4 @@
-# libdatachannel - C/C++ WebRTC lightweight library
+# libdatachannel - C/C++ WebRTC network library
 
 libdatachannel is a standalone implementation of WebRTC Data Channels, WebRTC Media Transport, and WebSockets in C++17 with C bindings for POSIX platforms (including GNU/Linux, Android, and Apple macOS) and Microsoft Windows.
 
@@ -8,9 +8,11 @@ It can be compiled with multiple backends:
 - The security layer can be provided through [OpenSSL](https://www.openssl.org/) or [GnuTLS](https://www.gnutls.org/).
 - The connectivity for WebRTC can be provided through my ad-hoc ICE library [libjuice](https://github.com/paullouisageneau/libjuice) as submodule or through [libnice](https://github.com/libnice/libnice).
 
-The WebRTC stack is fully compatible with Firefox and Chromium, see [Compatibility](#Compatibility) below.
+The WebRTC stack is fully compatible with browsers like Firefox and Chromium, see [Compatibility](#Compatibility) below. Additionally, code using Data Channels and WebSockets from the library may be compiled as is to WebAssembly for browsers with [datachannel-wasm](https://github.com/paullouisageneau/datachannel-wasm).
 
-Licensed under LGPLv2, see [LICENSE](https://github.com/paullouisageneau/libdatachannel/blob/master/LICENSE).
+libdatachannel is licensed under LGPLv2, see [LICENSE](https://github.com/paullouisageneau/libdatachannel/blob/master/LICENSE).
+
+libdatachannel is available on [AUR](https://aur.archlinux.org/packages/libdatachannel/) and [vcpkg](https://vcpkg.info/port/libdatachannel).
 
 ## Dependencies
 
@@ -45,7 +47,7 @@ rtc::PeerConection pc(config);
 
 pc.onLocalDescription([](rtc::Description sdp) {
     // Send the SDP to the remote peer
-    MY_SEND_DESCRIPTION_TO_REMOTE(string(sdp));
+    MY_SEND_DESCRIPTION_TO_REMOTE(std::string(sdp));
 });
 
 pc.onLocalCandidate([](rtc::Candidate candidate) {
@@ -53,11 +55,11 @@ pc.onLocalCandidate([](rtc::Candidate candidate) {
     MY_SEND_CANDIDATE_TO_REMOTE(candidate.candidate(), candidate.mid());
 });
 
-MY_ON_RECV_DESCRIPTION_FROM_REMOTE([&pc](string sdp) {
+MY_ON_RECV_DESCRIPTION_FROM_REMOTE([&pc](std::string sdp) {
     pc.setRemoteDescription(rtc::Description(sdp));
 });
 
-MY_ON_RECV_CANDIDATE_FROM_REMOTE([&pc](string candidate, string mid) {
+MY_ON_RECV_CANDIDATE_FROM_REMOTE([&pc](std::string candidate, std::string mid) {
     pc.addRemoteCandidate(rtc::Candidate(candidate, mid));
 });
 ```
@@ -83,9 +85,9 @@ dc->onOpen([]() {
     std::cout << "Open" << std::endl;
 });
 
-dc->onMessage([](std::variant<binary, string> message) {
-    if (std::holds_alternative<string>(message)) {
-        std::cout << "Received: " << get<string>(message) << std::endl;
+dc->onMessage([](std::variant<rtc::binary, rtc::string> message) {
+    if (std::holds_alternative<rtc::string>(message)) {
+        std::cout << "Received: " << get<rtc::string>(message) << std::endl;
     }
 });
 ```
@@ -109,9 +111,9 @@ ws.onOpen([]() {
     std::cout << "WebSocket open" << std::endl;
 });
 
-ws.onMessage([](std::variant<binary, string> message) {
-    if (std::holds_alternative<string>(message)) {
-        std::cout << "WebSocket received: " << std::get<string>(message) << endl;
+ws.onMessage([](std::variant<rtc::binary, rtc::string> message) {
+    if (std::holds_alternative<rtc::string>(message)) {
+        std::cout << "WebSocket received: " << std::get<rtc::string>(message) << endl;
     }
 });
 
@@ -139,8 +141,8 @@ Features:
 - SCTP over DTLS with SDP offer/answer ([RFC8841](https://tools.ietf.org/html/rfc8841))
 - DTLS with ECDSA or RSA keys ([RFC8824](https://tools.ietf.org/html/rfc8827))
 - SRTP and SRTCP key derivation from DTLS ([RFC5764](https://tools.ietf.org/html/rfc5764))
+- Differentiated Services QoS ([RFC8837](https://tools.ietf.org/html/rfc8837)) where possible
 - Multicast DNS candidates ([draft-ietf-rtcweb-mdns-ice-candidates-04](https://tools.ietf.org/html/draft-ietf-rtcweb-mdns-ice-candidates-04))
-- Differentiated Services QoS ([draft-ietf-tsvwg-rtcweb-qos-18](https://tools.ietf.org/html/draft-ietf-tsvwg-rtcweb-qos-18))
 
 Note only SDP BUNDLE mode is supported for media multiplexing ([RFC8843](https://tools.ietf.org/html/rfc8843)). The behavior is equivalent to the JSEP bundle-only policy: the library always negociates one unique network component, where SRTP media streams are multiplexed with SRTCP control packets ([RFC5761](https://tools.ietf.org/html/rfc5761)) and SCTP/DTLS data traffic ([RFC8261](https://tools.ietf.org/html/rfc8261)).
 
@@ -149,7 +151,7 @@ Note only SDP BUNDLE mode is supported for media multiplexing ([RFC8843](https:/
 WebSocket is the protocol of choice for WebRTC signaling. The support is optional and can be disabled at compile time.
 
 Protocol stack:
-- WebSocket protocol ([RFC6455](https://tools.ietf.org/html/rfc6455)), client-side only
+- WebSocket protocol ([RFC6455](https://tools.ietf.org/html/rfc6455)), client and server side
 - HTTP over TLS ([RFC2818](https://tools.ietf.org/html/rfc2818))
 
 Features:
@@ -161,6 +163,7 @@ Features:
 - Node.js wrapper for libdatachannel: [node-datachannel](https://github.com/murat-dogan/node-datachannel)
 - Unity wrapper for Windows 10 and Hololens: [datachannel-unity](https://github.com/hanseuljun/datachannel-unity)
 - WebAssembly wrapper compatible with libdatachannel: [datachannel-wasm](https://github.com/paullouisageneau/datachannel-wasm)
+- Lightweight STUN/TURN server: [Violet](https://github.com/paullouisageneau/violet)
 
 ## Thanks
 

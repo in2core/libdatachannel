@@ -18,14 +18,6 @@
 
 #include "threadpool.hpp"
 
-#include <cstdlib>
-
-namespace {
-
-void joinThreadPoolInstance() { rtc::impl::ThreadPool::Instance().join(); }
-
-} // namespace
-
 namespace rtc::impl {
 
 ThreadPool &ThreadPool::Instance() {
@@ -33,7 +25,7 @@ ThreadPool &ThreadPool::Instance() {
 	return *instance;
 }
 
-ThreadPool::ThreadPool() { std::atexit(joinThreadPoolInstance); }
+ThreadPool::ThreadPool() {}
 
 ThreadPool::~ThreadPool() {}
 
@@ -96,7 +88,7 @@ std::function<void()> ThreadPool::dequeue() {
 		--mBusyWorkers;
 		scope_guard guard([&]() { ++mBusyWorkers; });
 		mWaitingCondition.notify_all();
-		if(time)
+		if (time)
 			mTasksCondition.wait_until(lock, *time);
 		else
 			mTasksCondition.wait(lock);
