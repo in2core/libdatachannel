@@ -39,7 +39,7 @@ ChainedOutgoingProduct::ChainedOutgoingProduct(ChainedMessagesProduct messages, 
     : messages(messages), control(control) {}
 
 ChainedIncomingProduct::ChainedIncomingProduct(ChainedMessagesProduct incoming,
-                                               ChainedMessagesProduct outgoing)
+                                               ChainedOutgoingProduct outgoing)
     : incoming(incoming), outgoing(outgoing) {}
 
 ChainedIncomingControlProduct::ChainedIncomingControlProduct(

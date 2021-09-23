@@ -45,6 +45,10 @@ public:
 	/// @param payload RTP payload
 	/// @param setMark Set marker flag in RTP packet if true
 	virtual shared_ptr<binary> packetize(shared_ptr<binary> payload, bool setMark);
+	
+	/// Get payload from RTP packet .
+	/// @param packet RTP packet
+	virtual shared_ptr<binary> depacketize(shared_ptr<binary> packet);
 };
 
 } // namespace rtc

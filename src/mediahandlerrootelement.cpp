@@ -24,12 +24,29 @@ namespace rtc {
 
 message_ptr MediaHandlerRootElement::reduce(ChainedMessagesProduct messages) {
 	if (messages && !messages->empty()) {
-		auto msg_ptr = messages->front();
-		if (msg_ptr) {
-			return make_message(*msg_ptr);
-		} else {
+		std::vector<binary_ptr> filtered_messages{};
+		filtered_messages.reserve(messages->size());
+		size_t total_size = 1;
+		for (auto message: *messages) {
+			if (message && !message->empty()) {
+				total_size += 4 + message->size();
+				filtered_messages.push_back(message);
+			}
+		}
+		if (filtered_messages.empty()) {
 			return nullptr;
 		}
+		const auto msgs = make_message(total_size);
+		auto data = reinterpret_cast<uint8_t *>(msgs->data());
+		*data = 0;
+		data = data + 1;
+		for (auto message: filtered_messages) {
+			auto size_ptr = reinterpret_cast<uint32_t *>(data);
+			*size_ptr = htonl(message->size());
+			memcpy(data + 4, message->data(), message->size());
+			data = data + 4 + message->size();
+		}
+		return msgs;
 	} else {
 		return nullptr;
 	}

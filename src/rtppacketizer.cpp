@@ -42,6 +42,21 @@ binary_ptr RtpPacketizer::packetize(shared_ptr<binary> payload, bool setMark) {
 	return msg;
 }
 
+binary_ptr RtpPacketizer::depacketize(binary_ptr packet) {
+    if (packet->size() < rtpHeaderSize) {
+        return {};
+    }
+    auto *rtp = (RTP *)packet->data();
+    if (rtp->getSize() > packet->size()) {
+        return {};
+    }
+
+    auto payload_size = packet->size() - rtp->getSize();
+    auto payload = std::make_shared<binary>(payload_size);
+    std::memcpy(payload->data(), rtp->getBody(), payload_size);
+    return payload;
+}
+
 } // namespace rtc
 
 #endif /* RTC_ENABLE_MEDIA */

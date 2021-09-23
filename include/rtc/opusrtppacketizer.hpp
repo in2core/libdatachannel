@@ -51,6 +51,8 @@ public:
 	/// @returns RTP packets and unchanged `control`
 	ChainedOutgoingProduct processOutgoingBinaryMessage(ChainedMessagesProduct messages,
 	                                                    message_ptr control) override;
+
+	ChainedIncomingProduct processIncomingBinaryMessage(ChainedMessagesProduct messages) override;
 };
 
 } // namespace rtc

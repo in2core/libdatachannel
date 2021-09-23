@@ -25,13 +25,15 @@
 
 #include <queue>
 #include <unordered_map>
+#include <map>
+#include <set>
 
 namespace rtc {
 
 class RTC_CPP_EXPORT RtcpNackResponder final : public MediaHandlerElement {
 
 	/// Packet storage
-	class RTC_CPP_EXPORT Storage {
+	class RTC_CPP_EXPORT OutgoingStorage {
 
 		/// Packet storage element
 		struct RTC_CPP_EXPORT Element {
@@ -42,7 +44,6 @@ class RTC_CPP_EXPORT RtcpNackResponder final : public MediaHandlerElement {
 			shared_ptr<Element> next = nullptr;
 		};
 
-	private:
 		/// Oldest packet in storage
 		shared_ptr<Element> oldest = nullptr;
 		/// Newest packet in storage
@@ -60,7 +61,7 @@ class RTC_CPP_EXPORT RtcpNackResponder final : public MediaHandlerElement {
 	public:
 		static const unsigned defaultMaximumSize = 512;
 
-		Storage(unsigned _maximumSize);
+		OutgoingStorage(unsigned _maximumSize);
 
 		/// Returns packet with given sequence number
 		optional<binary_ptr> get(uint16_t sequenceNumber);
@@ -69,12 +70,44 @@ class RTC_CPP_EXPORT RtcpNackResponder final : public MediaHandlerElement {
 		/// @param packet Packet
 		void store(binary_ptr packet);
 	};
+	/// Incoming Packet storage
+	class RTC_CPP_EXPORT IncomingStorage {
 
-	const shared_ptr<Storage> storage;
-	std::mutex reportMutex;
+		/// Packet storage element
+		struct RTC_CPP_EXPORT Element {
+			Element(binary_ptr packet, long long time_ms);
+			const binary_ptr packet;
+			long long time_ms;
+		};
+
+		std::map<uint16_t, shared_ptr<Element>> storage1{};
+		std::map<uint16_t, shared_ptr<Element>> storage2{};
+		std::map<uint16_t, shared_ptr<Element>> * currentStorage;
+		std::map<uint16_t, shared_ptr<Element>> * overflowStorage;
+		optional<uint16_t> previousReportedSequenceNumber = nullopt;
+		std::set<uint16_t> requestedSequenceNumbers{};
+
+		optional<std::pair<uint16_t, bool>> getPreviousSequenceNumberWithOverflow(uint16_t sequence_number);
+		std::map<uint16_t, shared_ptr<Element>>::iterator addPacket(binary_ptr packet, uint16_t sequence_number, long long time_ms, std::map<uint16_t, shared_ptr<Element>> * used_storage);
+		uint16_t getPreviousReceivedSequenceNumber(std::map<uint16_t, shared_ptr<Element>>::iterator element_iterator, std::map<uint16_t, shared_ptr<Element>> * used_storage);
+		optional<std::pair<uint16_t, uint16_t>> generateNack(uint16_t previous_recieved_sequence_number, uint16_t sequence_number);
+		ChainedMessagesProduct getIncomingPackets(long long time_ms);
+
+		long long maximumWaitTime_ms;
+	public:
+		IncomingStorage(long long maximumWaitTime_ms);
+		/// Stores packet
+		/// @param packet Packet
+		std::pair<ChainedMessagesProduct, std::optional<std::pair<uint16_t, uint16_t>>> store(binary_ptr packet, long long time_ms);
+
+		static const long long defaultWaitTime = 250;
+	};
+
+	const shared_ptr<OutgoingStorage> outgoingStorage;
+	const shared_ptr<IncomingStorage> incomingStorage;
 
 public:
-	RtcpNackResponder(unsigned maxStoredPacketCount = Storage::defaultMaximumSize);
+	RtcpNackResponder(unsigned maxStoredPacketCount = OutgoingStorage::defaultMaximumSize, long long maxWaitTime = IncomingStorage::defaultWaitTime);
 
 	/// Checks for RTCP NACK and handles it,
 	/// @param message RTCP message
@@ -86,7 +119,9 @@ public:
 	/// @param control RTCP
 	/// @returns Unchanged RTP and RTCP
 	ChainedOutgoingProduct processOutgoingBinaryMessage(ChainedMessagesProduct messages,
-	                                                    message_ptr control) override;
+														message_ptr control) override;
+
+	ChainedIncomingProduct processIncomingBinaryMessage(ChainedMessagesProduct messages) override;
 };
 
 } // namespace rtc
