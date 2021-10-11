@@ -18,7 +18,12 @@
 
 #if RTC_ENABLE_MEDIA
 
+#ifdef _WIN32
+#include <winsock.h>
+#else
 #include <arpa/inet.h>
+#endif
+
 #include <cstring>
 
 #include "mediahandlerrootelement.hpp"
