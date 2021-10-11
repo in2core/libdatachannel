@@ -18,6 +18,9 @@
 
 #if RTC_ENABLE_MEDIA
 
+#include <arpa/inet.h>
+#include <cstring>
+
 #include "mediahandlerrootelement.hpp"
 
 namespace rtc {
