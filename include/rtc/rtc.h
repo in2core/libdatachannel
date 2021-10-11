@@ -246,6 +246,7 @@ typedef struct {
 	const char *name;    // optional
 	const char *msid;    // optional
 	const char *trackId; // optional, track ID used in MSID
+	const char *profile; // optional
 } rtcTrackInit;
 
 RTC_EXPORT int rtcSetTrackCallback(int pc, rtcTrackCallbackFunc cb);

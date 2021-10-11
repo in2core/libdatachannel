@@ -917,6 +917,7 @@ int rtcAddTrackEx(int pc, const rtcTrackInit *init) {
 		}
 
 		optional<Description::Media> optDescription = nullopt;
+		optional<string> profile = init->profile == NULL ? nullopt : make_optional(string(init->profile));
 
 		switch (init->codec) {
 		case RTC_CODEC_H264:
@@ -925,7 +926,7 @@ int rtcAddTrackEx(int pc, const rtcTrackInit *init) {
 			auto desc = Description::Video(mid, direction);
 			switch (init->codec) {
 			case RTC_CODEC_H264:
-				desc.addH264Codec(init->payloadType);
+				desc.addH264Codec(init->payloadType, profile);
 				break;
 			case RTC_CODEC_VP8:
 				desc.addVP8Codec(init->payloadType);
@@ -943,7 +944,7 @@ int rtcAddTrackEx(int pc, const rtcTrackInit *init) {
 			auto desc = Description::Audio(mid, direction);
 			switch (init->codec) {
 			case RTC_CODEC_OPUS:
-				desc.addOpusCodec(init->payloadType);
+				desc.addOpusCodec(init->payloadType, profile);
 				break;
 			default:
 				break;
