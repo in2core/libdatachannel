@@ -29,6 +29,7 @@
 #include "wstransport.hpp"
 
 #include <regex>
+#include <array>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -175,6 +176,19 @@ void WebSocket::incoming(message_ptr message) {
 	}
 }
 
+// Helper for WebSocket::initXTransport methods: start and emplace the transport
+template <typename T>
+shared_ptr<T> emplaceTransport(WebSocket *ws, shared_ptr<T> *member, shared_ptr<T> transport) {
+	transport->start();
+	std::atomic_store(member, transport);
+	if (ws->state.load() == WebSocket::State::Closed) {
+		std::atomic_store(member, decltype(transport)(nullptr));
+		transport->stop();
+		return nullptr;
+	}
+	return transport;
+}
+
 shared_ptr<TcpTransport> WebSocket::setTcpTransport(shared_ptr<TcpTransport> transport) {
 	PLOG_VERBOSE << "Starting TCP transport";
 
@@ -210,13 +224,7 @@ shared_ptr<TcpTransport> WebSocket::setTcpTransport(shared_ptr<TcpTransport> tra
 			}
 		});
 
-		std::atomic_store(&mTcpTransport, transport);
-		if (state == WebSocket::State::Closed) {
-			mTcpTransport.reset();
-			throw std::runtime_error("Connection is closed");
-		}
-		transport->start();
-		return transport;
+		return emplaceTransport(this, &mTcpTransport, std::move(transport));
 
 	} catch (const std::exception &e) {
 		PLOG_ERROR << e.what();
@@ -245,7 +253,7 @@ shared_ptr<TlsTransport> WebSocket::initTlsTransport() {
 				initWsTransport();
 				break;
 			case State::Failed:
-				triggerError("TCP connection failed");
+				triggerError("TLS connection failed");
 				remoteClose();
 				break;
 			case State::Disconnected:
@@ -273,13 +281,7 @@ shared_ptr<TlsTransport> WebSocket::initTlsTransport() {
 			transport =
 			    std::make_shared<TlsTransport>(lower, mHostname, mCertificate, stateChangeCallback);
 
-		std::atomic_store(&mTlsTransport, transport);
-		if (state == WebSocket::State::Closed) {
-			mTlsTransport.reset();
-			throw std::runtime_error("Connection is closed");
-		}
-		transport->start();
-		return transport;
+		return emplaceTransport(this, &mTlsTransport, std::move(transport));
 
 	} catch (const std::exception &e) {
 		PLOG_ERROR << e.what();
@@ -321,8 +323,8 @@ shared_ptr<WsTransport> WebSocket::initWsTransport() {
 			case State::Connected:
 				if (state == WebSocket::State::Connecting) {
 					PLOG_DEBUG << "WebSocket open";
-					changeState(WebSocket::State::Open);
-					triggerOpen();
+					if (changeState(WebSocket::State::Open))
+						triggerOpen();
 				}
 				break;
 			case State::Failed:
@@ -341,13 +343,7 @@ shared_ptr<WsTransport> WebSocket::initWsTransport() {
 		auto transport = std::make_shared<WsTransport>(
 		    lower, mWsHandshake, weak_bind(&WebSocket::incoming, this, _1), stateChangeCallback);
 
-		std::atomic_store(&mWsTransport, transport);
-		if (state == WebSocket::State::Closed) {
-			mWsTransport.reset();
-			throw std::runtime_error("Connection is closed");
-		}
-		transport->start();
-		return transport;
+		return emplaceTransport(this, &mWsTransport, std::move(transport));
 
 	} catch (const std::exception &e) {
 		PLOG_ERROR << e.what();
@@ -375,30 +371,34 @@ shared_ptr<WsHandshake> WebSocket::getWsHandshake() const {
 void WebSocket::closeTransports() {
 	PLOG_VERBOSE << "Closing transports";
 
-	if (state.load() != State::Closed) {
-		changeState(State::Closed);
-		triggerClosed();
-	}
-
-	// Reset callbacks now that state is changed
-	resetCallbacks();
+	if (!changeState(State::Closed))
+		return; // already closed
 
 	// Pass the pointers to a thread, allowing to terminate a transport from its own thread
 	auto ws = std::atomic_exchange(&mWsTransport, decltype(mWsTransport)(nullptr));
 	auto tls = std::atomic_exchange(&mTlsTransport, decltype(mTlsTransport)(nullptr));
 	auto tcp = std::atomic_exchange(&mTcpTransport, decltype(mTcpTransport)(nullptr));
-	ThreadPool::Instance().enqueue([ws, tls, tcp]() mutable {
-		if (ws)
-			ws->stop();
-		if (tls)
-			tls->stop();
-		if (tcp)
-			tcp->stop();
 
-		ws.reset();
-		tls.reset();
-		tcp.reset();
+	if (ws)
+		ws->onRecv(nullptr);
+
+	using array = std::array<shared_ptr<Transport>, 3>;
+	array transports{std::move(ws), std::move(tls), std::move(tcp)};
+
+	for (const auto &t : transports)
+		if (t)
+			t->onStateChange(nullptr);
+
+	ThreadPool::Instance().enqueue([transports = std::move(transports)]() mutable {
+		for (const auto &t : transports)
+			if (t)
+				t->stop();
+
+		for (auto &t : transports)
+			t.reset();
 	});
+
+	triggerClosed();
 }
 
 } // namespace rtc::impl

@@ -21,6 +21,7 @@
 #include "websocket.hpp"
 #include "common.hpp"
 
+#include "impl/message.hpp"
 #include "impl/internals.hpp"
 #include "impl/websocket.hpp"
 
@@ -36,7 +37,14 @@ WebSocket::WebSocket(impl_ptr<impl::WebSocket> impl)
     : CheshireCat<impl::WebSocket>(std::move(impl)),
       Channel(std::dynamic_pointer_cast<impl::Channel>(CheshireCat<impl::WebSocket>::impl())) {}
 
-WebSocket::~WebSocket() { impl()->remoteClose(); }
+WebSocket::~WebSocket() {
+	try {
+		impl()->remoteClose();
+		impl()->resetCallbacks(); // not done by impl::WebSocket
+	} catch (const std::exception &e) {
+		PLOG_ERROR << e.what();
+	}
+}
 
 WebSocket::State WebSocket::readyState() const { return impl()->state; }
 
@@ -51,24 +59,14 @@ void WebSocket::open(const string &url) {
 	impl()->open(url);
 }
 
-void WebSocket::close() {
-	auto state = impl()->state.load();
-	if (state == State::Connecting || state == State::Open) {
-		PLOG_VERBOSE << "Closing WebSocket";
-		impl()->changeState(State::Closing);
-		if (auto transport = impl()->getWsTransport())
-			transport->close();
-		else
-			impl()->changeState(State::Closed);
-	}
-}
+void WebSocket::close() { impl()->close(); }
 
 bool WebSocket::send(message_variant data) {
-	return impl()->outgoing(make_message(std::move(data)));
+	return impl()->outgoing(impl::make_message(std::move(data)));
 }
 
 bool WebSocket::send(const byte *data, size_t size) {
-	return impl()->outgoing(make_message(data, data + size));
+	return impl()->outgoing(impl::make_message(data, data + size, impl::Message::Binary));
 }
 
 optional<string> WebSocket::remoteAddress() const {

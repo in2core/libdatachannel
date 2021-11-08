@@ -21,7 +21,6 @@
 
 #if RTC_ENABLE_MEDIA
 
-#include "message.hpp"
 #include "rtppacketizationconfig.hpp"
 
 namespace rtc {
@@ -29,6 +28,7 @@ namespace rtc {
 /// Class responsible for RTP packetization
 class RTC_CPP_EXPORT RtpPacketizer {
 	static const auto rtpHeaderSize = 12;
+	static const auto rtpExtHeaderCvoSize = 8;
 
 public:
 	// RTP configuration

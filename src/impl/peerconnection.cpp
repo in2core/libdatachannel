@@ -37,6 +37,7 @@
 #include <iomanip>
 #include <set>
 #include <thread>
+#include <array>
 
 using namespace std::placeholders;
 
@@ -115,6 +116,19 @@ size_t PeerConnection::remoteMaxMessageSize() const {
 	return std::min(remoteMax, localMax);
 }
 
+// Helper for PeerConnection::initXTransport methods: start and emplace the transport
+template <typename T>
+shared_ptr<T> emplaceTransport(PeerConnection *pc, shared_ptr<T> *member, shared_ptr<T> transport) {
+	transport->start();
+	std::atomic_store(member, transport);
+	if (pc->state.load() == PeerConnection::State::Closed) {
+		std::atomic_store(member, decltype(transport)(nullptr));
+		transport->stop();
+		return nullptr;
+	}
+	return transport;
+}
+
 shared_ptr<IceTransport> PeerConnection::initIceTransport() {
 	try {
 		if (auto transport = std::atomic_load(&mIceTransport))
@@ -164,13 +178,7 @@ shared_ptr<IceTransport> PeerConnection::initIceTransport() {
 			    }
 		    });
 
-		std::atomic_store(&mIceTransport, transport);
-		if (state.load() == State::Closed) {
-			mIceTransport.reset();
-			throw std::runtime_error("Connection is closed");
-		}
-		transport->start();
-		return transport;
+		return emplaceTransport(this, &mIceTransport, std::move(transport));
 
 	} catch (const std::exception &e) {
 		PLOG_ERROR << e.what();
@@ -239,13 +247,7 @@ shared_ptr<DtlsTransport> PeerConnection::initDtlsTransport() {
 			                                            verifierCallback, dtlsStateChangeCallback);
 		}
 
-		std::atomic_store(&mDtlsTransport, transport);
-		if (state.load() == State::Closed) {
-			mDtlsTransport.reset();
-			throw std::runtime_error("Connection is closed");
-		}
-		transport->start();
-		return transport;
+		return emplaceTransport(this, &mDtlsTransport, std::move(transport));
 
 	} catch (const std::exception &e) {
 		PLOG_ERROR << e.what();
@@ -301,13 +303,7 @@ shared_ptr<SctpTransport> PeerConnection::initSctpTransport() {
 			    }
 		    });
 
-		std::atomic_store(&mSctpTransport, transport);
-		if (state.load() == State::Closed) {
-			mSctpTransport.reset();
-			throw std::runtime_error("Connection is closed");
-		}
-		transport->start();
-		return transport;
+		return emplaceTransport(this, &mSctpTransport, std::move(transport));
 
 	} catch (const std::exception &e) {
 		PLOG_ERROR << e.what();
@@ -344,17 +340,26 @@ void PeerConnection::closeTransports() {
 		auto sctp = std::atomic_exchange(&mSctpTransport, decltype(mSctpTransport)(nullptr));
 		auto dtls = std::atomic_exchange(&mDtlsTransport, decltype(mDtlsTransport)(nullptr));
 		auto ice = std::atomic_exchange(&mIceTransport, decltype(mIceTransport)(nullptr));
-		ThreadPool::Instance().enqueue([sctp, dtls, ice]() mutable {
-			if (sctp)
-				sctp->stop();
-			if (dtls)
-				dtls->stop();
-			if (ice)
-				ice->stop();
 
-			sctp.reset();
-			dtls.reset();
-			ice.reset();
+		if (sctp) {
+			sctp->onRecv(nullptr);
+			sctp->onBufferedAmount(nullptr);
+		}
+
+		using array = std::array<shared_ptr<Transport>, 3>;
+		array transports{std::move(sctp), std::move(dtls), std::move(ice)};
+
+		for (const auto &t : transports)
+			if (t)
+				t->onStateChange(nullptr);
+
+		ThreadPool::Instance().enqueue([transports = std::move(transports)]() mutable {
+			for (const auto &t : transports)
+				if (t)
+					t->stop();
+
+			for (auto &t : transports)
+				t.reset();
 		});
 	});
 }
@@ -560,6 +565,7 @@ void PeerConnection::forwardBufferedAmount(uint16_t stream, size_t amount) {
 }
 
 shared_ptr<DataChannel> PeerConnection::emplaceDataChannel(string label, DataChannelInit init) {
+	cleanupDataChannels();
 	std::unique_lock lock(mDataChannelsMutex); // we are going to emplace
 	uint16_t stream;
 	if (init.id) {
@@ -625,23 +631,26 @@ void PeerConnection::shiftDataChannels() {
 	}
 }
 
-void PeerConnection::iterateDataChannels(
-    std::function<void(shared_ptr<DataChannel> channel)> func) {
-	// Iterate
+void PeerConnection::iterateDataChannels(std::function<void(shared_ptr<DataChannel> channel)> func) {
+	std::vector<shared_ptr<DataChannel>> locked;
 	{
 		std::shared_lock lock(mDataChannelsMutex); // read-only
+		locked.reserve(mDataChannels.size());
 		auto it = mDataChannels.begin();
 		while (it != mDataChannels.end()) {
 			auto channel = it->second.lock();
 			if (channel && !channel->isClosed())
-				func(channel);
+				locked.push_back(std::move(channel));
 
 			++it;
 		}
 	}
 
-	// Cleanup
-	{
+	for(auto &channel : locked)
+		func(std::move(channel));
+}
+
+void PeerConnection::cleanupDataChannels() {
 		std::unique_lock lock(mDataChannelsMutex); // we are going to erase
 		auto it = mDataChannels.begin();
 		while (it != mDataChannels.end()) {
@@ -652,7 +661,6 @@ void PeerConnection::iterateDataChannels(
 
 			++it;
 		}
-	}
 }
 
 void PeerConnection::openDataChannels() {
@@ -867,12 +875,20 @@ void PeerConnection::processLocalDescription(Description description) {
 				description.addMedia(std::move(media));
 			}
 		}
+
+		// There might be no media at this point if the user created a Track, deleted it,
+		// then called setLocalDescription().
+		if (description.mediaCount() == 0)
+			throw std::runtime_error("No DataChannel or Track to negotiate");
 	}
 
 	// Set local fingerprint (wait for certificate if necessary)
 	description.setFingerprint(mCertificate.get()->fingerprint());
 
 	PLOG_VERBOSE << "Issuing local description: " << description;
+
+	if (description.mediaCount() == 0)
+		throw std::logic_error("Local description has no media line");
 
 	{
 		// Set as local description
@@ -929,6 +945,9 @@ void PeerConnection::processRemoteDescription(Description description) {
 	}
 
 	auto iceTransport = initIceTransport();
+	if (!iceTransport)
+		return; // closed
+
 	iceTransport->setRemoteDescription(std::move(description));
 
 	// Since we assumed passive role during DataChannel creation, we might need to shift the stream
@@ -1029,11 +1048,11 @@ void PeerConnection::triggerPendingTracks() {
 }
 
 void PeerConnection::flushPendingDataChannels() {
-	mProcessor->enqueue(std::bind(&PeerConnection::triggerPendingDataChannels, this));
+	mProcessor->enqueue(&PeerConnection::triggerPendingDataChannels, this);
 }
 
 void PeerConnection::flushPendingTracks() {
-	mProcessor->enqueue(std::bind(&PeerConnection::triggerPendingTracks, this));
+	mProcessor->enqueue(&PeerConnection::triggerPendingTracks, this);
 }
 
 bool PeerConnection::changeState(State newState) {

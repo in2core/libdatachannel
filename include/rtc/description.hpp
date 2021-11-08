@@ -95,11 +95,31 @@ public:
 		std::vector<string>::iterator endAttributes();
 		std::vector<string>::iterator removeAttribute(std::vector<string>::iterator iterator);
 
+		struct ExtMap {
+			ExtMap(string_view description);
+			ExtMap() {}
+
+			int id;
+			string uri;
+			string attributes;
+			Direction direction = Direction::Unknown;
+
+			static int parseId(string_view view);
+			void setDescription(string_view view);
+		};
+
+		void addExtMap(const ExtMap &map);
+
+		std::map<int, ExtMap>::iterator beginExtMaps();
+		std::map<int, ExtMap>::iterator endExtMaps();
+		std::map<int, ExtMap>::iterator removeExtMap(std::map<int, ExtMap>::iterator iterator);
+
 	protected:
 		Entry(const string &mline, string mid, Direction dir = Direction::Unknown);
 		virtual string generateSdpLines(string_view eol) const;
 
 		std::vector<string> mAttributes;
+		std::map<int, ExtMap> mExtMap;
 
 	private:
 		string mType;

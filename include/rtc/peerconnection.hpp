@@ -24,7 +24,6 @@
 #include "configuration.hpp"
 #include "datachannel.hpp"
 #include "description.hpp"
-#include "message.hpp"
 #include "reliability.hpp"
 #include "track.hpp"
 
@@ -89,7 +88,6 @@ public:
 	bool getSelectedCandidatePair(Candidate *local, Candidate *remote);
 
 	void setLocalDescription(Description::Type type = Description::Type::Unspec);
-
 	void setRemoteDescription(Description description);
 	void addRemoteCandidate(Candidate candidate);
 

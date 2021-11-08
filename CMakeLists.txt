@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.7)
 project(libdatachannel
-	VERSION 0.14.2
+	VERSION 0.15.5
 	LANGUAGES CXX)
 set(PROJECT_DESCRIPTION "C/C++ WebRTC network library featuring Data Channels, Media Transport, and WebSockets")
 
@@ -15,6 +15,7 @@ option(NO_EXAMPLES "Disable examples" OFF)
 option(NO_TESTS "Disable tests build" OFF)
 option(WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 option(CAPI_STDCALL "Set calling convention of C API callbacks stdcall" OFF)
+option(SCTP_DEBUG "Enable SCTP debugging output to verbose log" OFF)
 
 if(USE_GNUTLS)
 	option(USE_NETTLE "Use Nettle in libjuice" ON)
@@ -45,7 +46,6 @@ set(LIBDATACHANNEL_SOURCES
 	${CMAKE_CURRENT_SOURCE_DIR}/src/datachannel.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/description.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/global.cpp
-	${CMAKE_CURRENT_SOURCE_DIR}/src/message.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/peerconnection.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/rtcpreceivingsession.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/track.cpp
@@ -72,14 +72,12 @@ set(LIBDATACHANNEL_HEADERS
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/candidate.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/channel.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/configuration.hpp
-	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/configuration.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/datachannel.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/description.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/mediahandler.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/rtcpreceivingsession.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/common.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/global.hpp
-	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/message.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/peerconnection.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/reliability.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/rtc.h
@@ -112,6 +110,7 @@ set(LIBDATACHANNEL_IMPL_SOURCES
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/dtlstransport.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/icetransport.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/init.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/message.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/peerconnection.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/logcounter.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/sctptransport.cpp
@@ -121,7 +120,7 @@ set(LIBDATACHANNEL_IMPL_SOURCES
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/processor.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/base64.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/sha.cpp
-	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/selectinterrupter.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/pollinterrupter.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/tcpserver.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/tcptransport.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/tlstransport.cpp
@@ -141,6 +140,7 @@ set(LIBDATACHANNEL_IMPL_HEADERS
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/icetransport.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/init.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/internals.hpp
+	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/message.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/peerconnection.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/queue.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/logcounter.hpp
@@ -151,7 +151,7 @@ set(LIBDATACHANNEL_IMPL_HEADERS
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/processor.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/base64.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/sha.hpp
-	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/selectinterrupter.hpp
+	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/pollinterrupter.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/tcpserver.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/tcptransport.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/impl/tlstransport.hpp
@@ -202,6 +202,9 @@ find_package(Threads REQUIRED)
 set(CMAKE_POLICY_DEFAULT_CMP0048 NEW)
 add_subdirectory(deps/plog EXCLUDE_FROM_ALL)
 
+if(SCTP_DEBUG)
+	add_definitions(-DSCTP_DEBUG)
+endif()
 option(sctp_build_programs 0)
 option(sctp_build_shared_lib 0)
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
@@ -227,7 +230,8 @@ add_library(datachannel-static STATIC EXCLUDE_FROM_ALL
 
 set_target_properties(datachannel PROPERTIES
 	VERSION ${PROJECT_VERSION}
-	CXX_STANDARD 17)
+	CXX_STANDARD 17
+	CXX_VISIBILITY_PRESET default)
 set_target_properties(datachannel-static PROPERTIES
 	VERSION ${PROJECT_VERSION}
 	CXX_STANDARD 17)
@@ -314,8 +318,16 @@ else()
 		# This is a bug in CMake that causes it to prefer the system version over
 		# the one in the specified ROOT folder
 		if(EXISTS ${OPENSSL_ROOT_DIR})
-			set(OPENSSL_CRYPTO_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libcrypto.dylib" CACHE FILEPATH "" FORCE)
-			set(OPENSSL_SSL_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libssl.dylib" CACHE FILEPATH "" FORCE)
+            # Use static files when OPENSSL_USE_STATIC_LIBS is set.
+            # OPENSSL_USE_STATIC_LIBS is what CMake's FindOpenSSL looks at
+            # to decide whether to use static libraries.
+            if(OPENSSL_USE_STATIC_LIBS)
+                set(OPENSSL_CRYPTO_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libcrypto.a" CACHE FILEPATH "" FORCE)
+                set(OPENSSL_SSL_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libssl.a" CACHE FILEPATH "" FORCE)
+            else()
+                set(OPENSSL_CRYPTO_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libcrypto.dylib" CACHE FILEPATH "" FORCE)
+                set(OPENSSL_SSL_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libssl.dylib" CACHE FILEPATH "" FORCE)
+            endif()
 		endif()
 	endif()
 	find_package(OpenSSL REQUIRED)
@@ -375,7 +387,7 @@ if(WARNINGS_AS_ERRORS)
 	endif()
 endif()
 
-install(TARGETS datachannel EXPORT libdatachannel-config
+install(TARGETS datachannel EXPORT LibDataChannelTargets
 	RUNTIME DESTINATION bin
 	LIBRARY DESTINATION lib
 	ARCHIVE DESTINATION lib
@@ -385,11 +397,28 @@ install(FILES ${LIBDATACHANNEL_HEADERS}
 	DESTINATION include/rtc
 )
 
+# Export targets
 install(
-  EXPORT libdatachannel-config
-  NAMESPACE LibDatachannel::
-  DESTINATION share/cmake/libdatachannel
+	EXPORT LibDataChannelTargets
+	FILE LibDataChannelTargets.cmake
+	NAMESPACE LibDataChannel::
+	DESTINATION lib/cmake/LibDataChannel
 )
+
+# Export config
+install(
+	FILES ${CMAKE_CURRENT_SOURCE_DIR}/cmake/LibDataChannelConfig.cmake
+	DESTINATION lib/cmake/LibDataChannel
+)
+
+# Export config version
+include(CMakePackageConfigHelpers)
+write_basic_package_version_file(
+	${CMAKE_BINARY_DIR}/LibDataChannelConfigVersion.cmake
+	VERSION ${PROJECT_VERSION}
+	COMPATIBILITY SameMajorVersion)
+install(FILES ${CMAKE_BINARY_DIR}/LibDataChannelConfigVersion.cmake
+	DESTINATION lib/cmake/LibDataChannel)
 
 # Tests
 if(NOT NO_TESTS)

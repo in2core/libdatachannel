@@ -684,7 +684,11 @@ int rtcSendMessage(int id, const char *data, int size) {
 }
 
 bool rtcIsOpen(int id) {
-	return wrap([id] { return getChannel(id)->isOpen(); });
+	return wrap([id] { return getChannel(id)->isOpen() ? 0 : 1; }) == 0 ? true : false;
+}
+
+bool rtcIsClosed(int id) {
+	return wrap([id] { return getChannel(id)->isClosed() ? 0 : 1; }) == 0 ? true : false;
 }
 
 int rtcGetBufferedAmount(int id) {
@@ -1024,9 +1028,12 @@ int rtcSetH264PacketizationHandler(int tr, const rtcPacketizationHandlerInit *in
 		// create RTP configuration
 		auto rtpConfig = createRtpPacketizationConfig(init);
 		// create packetizer
+		auto nalSeparator = init ? init->nalSeparator : RTC_NAL_SEPARATOR_LENGTH;
 		auto maxFragmentSize = init && init->maxFragmentSize ? init->maxFragmentSize
 		                                                     : RTC_DEFAULT_MAXIMUM_FRAGMENT_SIZE;
-		auto packetizer = std::make_shared<H264RtpPacketizer>(rtpConfig, maxFragmentSize);
+		auto packetizer = std::make_shared<H264RtpPacketizer>(
+		    static_cast<rtc::H264RtpPacketizer::Separator>(nalSeparator), rtpConfig,
+		    maxFragmentSize);
 		// create H264 handler
 		auto h264Handler = std::make_shared<H264PacketizationHandler>(packetizer);
 		emplaceMediaChainableHandler(h264Handler, tr);

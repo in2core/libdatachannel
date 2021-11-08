@@ -45,13 +45,14 @@ shared_ptr<TcpTransport> TcpServer::accept() {
 		if (mSock == INVALID_SOCKET)
 			break;
 
-		fd_set readfds;
-		FD_ZERO(&readfds);
-		FD_SET(mSock, &readfds);
-		int n = std::max(mInterrupter.prepare(readfds), SOCKET_TO_INT(mSock) + 1);
+		struct pollfd pfd[2];
+		pfd[0].fd = mSock;
+		pfd[0].events = POLLIN;
+		mInterrupter.prepare(pfd[1]);
 		lock.unlock();
-		int ret = ::select(n, &readfds, NULL, NULL, NULL);
+		int ret = ::poll(pfd, 2, -1);
 		lock.lock();
+
 		if (mSock == INVALID_SOCKET)
 			break;
 
@@ -62,7 +63,11 @@ shared_ptr<TcpTransport> TcpServer::accept() {
 				throw std::runtime_error("Failed to wait for socket connection");
 		}
 
-		if (FD_ISSET(mSock, &readfds)) {
+		if (pfd[0].revents & POLLNVAL || pfd[0].revents & POLLERR) {
+			throw std::runtime_error("Error while waiting for socket connection");
+		}
+
+		if (pfd[0].revents & POLLIN) {
 			struct sockaddr_storage addr;
 			socklen_t addrlen = sizeof(addr);
 			socket_t incomingSock = ::accept(mSock, (struct sockaddr *)&addr, &addrlen);
@@ -98,24 +103,25 @@ void TcpServer::listen(uint16_t port) {
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_protocol = IPPROTO_TCP;
-	hints.ai_flags = AI_ADDRCONFIG;
+	hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV;
 
 	struct addrinfo *result = nullptr;
 	if (::getaddrinfo(nullptr, std::to_string(port).c_str(), &hints, &result))
 		throw std::runtime_error("Resolution failed for local address");
 
-	static const auto find_family = [](struct addrinfo *ai_list, int family) {
-		struct addrinfo *ai = ai_list;
-		while (ai && ai->ai_family != family)
-			ai = ai->ai_next;
-		return ai;
-	};
-
-	struct addrinfo *ai;
-	if ((ai = find_family(result, AF_INET6)) == NULL && (ai = find_family(result, AF_INET)) == NULL)
-		throw std::runtime_error("No suitable address family found");
-
 	try {
+		static const auto find_family = [](struct addrinfo *ai_list, int family) {
+			struct addrinfo *ai = ai_list;
+			while (ai && ai->ai_family != family)
+				ai = ai->ai_next;
+			return ai;
+		};
+
+		struct addrinfo *ai;
+		if ((ai = find_family(result, AF_INET6)) == NULL &&
+		    (ai = find_family(result, AF_INET)) == NULL)
+			throw std::runtime_error("No suitable address family found");
+
 		std::unique_lock lock(mSockMutex);
 		PLOG_VERBOSE << "Creating TCP server socket";
 
@@ -127,8 +133,8 @@ void TcpServer::listen(uint16_t port) {
 		// Listen on both IPv6 and IPv4
 		const sockopt_t disabled = 0;
 		if (ai->ai_family == AF_INET6)
-			::setsockopt(mSock, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&disabled,
-			             sizeof(disabled));
+			::setsockopt(mSock, IPPROTO_IPV6, IPV6_V6ONLY,
+			             reinterpret_cast<const char *>(&disabled), sizeof(disabled));
 
 		// Set non-blocking
 		ctl_t b = 1;

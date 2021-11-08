@@ -69,6 +69,7 @@ struct PeerConnection : std::enable_shared_from_this<PeerConnection> {
 	shared_ptr<DataChannel> findDataChannel(uint16_t stream);
 	void shiftDataChannels();
 	void iterateDataChannels(std::function<void(shared_ptr<DataChannel> channel)> func);
+	void cleanupDataChannels();
 	void openDataChannels();
 	void closeDataChannels();
 	void remoteCloseDataChannels();
@@ -106,6 +107,7 @@ struct PeerConnection : std::enable_shared_from_this<PeerConnection> {
 	std::atomic<GatheringState> gatheringState = GatheringState::New;
 	std::atomic<SignalingState> signalingState = SignalingState::Stable;
 	std::atomic<bool> negotiationNeeded = false;
+	std::mutex signalingMutex;
 
 	synchronized_callback<shared_ptr<rtc::DataChannel>> dataChannelCallback;
 	synchronized_callback<Description> localDescriptionCallback;
@@ -116,7 +118,7 @@ struct PeerConnection : std::enable_shared_from_this<PeerConnection> {
 	synchronized_callback<shared_ptr<rtc::Track>> trackCallback;
 
 private:
-	const init_token mInitToken = Init::Token();
+	const init_token mInitToken = Init::Instance().token();
 	const future_certificate_ptr mCertificate;
 	const unique_ptr<Processor> mProcessor;
 

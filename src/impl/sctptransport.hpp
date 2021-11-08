@@ -53,6 +53,10 @@ public:
 	bool flush();
 	void closeStream(unsigned int stream);
 
+	void onBufferedAmount(amount_callback callback) {
+		mBufferedAmountCallback = std::move(callback);
+	}
+
 	// Stats
 	void clearStats();
 	size_t bytesSent();
@@ -117,6 +121,7 @@ private:
 
 	static void UpcallCallback(struct socket *sock, void *arg, int flags);
 	static int WriteCallback(void *sctp_ptr, void *data, size_t len, uint8_t tos, uint8_t set_df);
+	static void DebugCallback(const char *format, ...);
 
 	class InstancesSet;
 	static InstancesSet *Instances;

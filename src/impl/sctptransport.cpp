@@ -22,6 +22,8 @@
 #include "logcounter.hpp"
 
 #include <chrono>
+#include <cstdarg>
+#include <cstdio>
 #include <exception>
 #include <iostream>
 #include <limits>
@@ -113,9 +115,13 @@ private:
 SctpTransport::InstancesSet *SctpTransport::Instances = new InstancesSet;
 
 void SctpTransport::Init() {
-	usrsctp_init(0, &SctpTransport::WriteCallback, nullptr);
+	usrsctp_init(0, SctpTransport::WriteCallback, SctpTransport::DebugCallback);
+	usrsctp_enable_crc32c_offload();       // We'll compute CRC32 only for outgoing packets
 	usrsctp_sysctl_set_sctp_pr_enable(1);  // Enable Partial Reliability Extension (RFC 3758)
 	usrsctp_sysctl_set_sctp_ecn_enable(0); // Disable Explicit Congestion Notification
+#ifdef SCTP_DEBUG
+	usrsctp_sysctl_set_sctp_debug_on(SCTP_DEBUG_ALL);
+#endif
 }
 
 void SctpTransport::SetSettings(const SctpSettings &s) {
@@ -178,7 +184,7 @@ SctpTransport::SctpTransport(shared_ptr<Transport> lower, const Configuration &c
                              state_callback stateChangeCallback)
     : Transport(lower, std::move(stateChangeCallback)), mPort(port),
       mSendQueue(0, message_size_func), mBufferedAmountCallback(std::move(bufferedAmountCallback)) {
-	onRecv(recvCallback);
+	onRecv(std::move(recvCallback));
 
 	PLOG_DEBUG << "Initializing SCTP transport";
 
@@ -263,7 +269,7 @@ SctpTransport::SctpTransport(shared_ptr<Transport> lower, const Configuration &c
 		spp.spp_flags |= SPP_PMTUD_DISABLE;
 		// The MTU value provided specifies the space available for chunks in the
 		// packet, so we also subtract the SCTP header size.
-		size_t pmtu = config.mtu.value_or(DEFAULT_MTU) - 12 - 37 - 8 - 40; // SCTP/DTLS/UDP/IPv6
+		size_t pmtu = config.mtu.value_or(DEFAULT_MTU) - 12 - 48 - 8 - 40; // SCTP/DTLS/UDP/IPv6
 		spp.spp_pathmtu = to_uint32(pmtu);
 		PLOG_VERBOSE << "Path MTU discovery disabled, SCTP MTU set to " << pmtu;
 	}
@@ -344,7 +350,6 @@ bool SctpTransport::stop() {
 	mSendQueue.stop();
 	flush();
 	shutdown();
-	onRecv(nullptr);
 	return true;
 }
 
@@ -429,7 +434,11 @@ bool SctpTransport::flush() {
 }
 
 void SctpTransport::closeStream(unsigned int stream) {
-	send(make_message(0, Message::Reset, to_uint16(stream)));
+	std::lock_guard lock(mSendMutex);
+
+	// This method must not call the buffered callback synchronously
+	mSendQueue.push(make_message(0, Message::Reset, to_uint16(stream)));
+	mProcessor.enqueue(&SctpTransport::flush, this);
 }
 
 void SctpTransport::incoming(message_ptr message) {
@@ -530,6 +539,7 @@ bool SctpTransport::trySendQueue() {
 		message_ptr message = std::move(*next);
 		if (!trySendMessage(message))
 			return false;
+
 		mSendQueue.pop();
 		updateBufferedAmount(to_uint16(message->stream), -ptrdiff_t(message_size_func(message)));
 	}
@@ -616,13 +626,17 @@ bool SctpTransport::trySendMessage(message_ptr message) {
 	}
 
 	PLOG_VERBOSE << "SCTP sent size=" << message->size();
-	if (message->type == Message::Type::Binary || message->type == Message::Type::String)
+	if (message->type == Message::Binary || message->type == Message::String)
 		mBytesSent += message->size();
 	return true;
 }
 
 void SctpTransport::updateBufferedAmount(uint16_t streamId, ptrdiff_t delta) {
 	// Requires mSendMutex to be locked
+
+	if (delta == 0)
+		return;
+
 	auto it = mBufferedAmount.insert(std::make_pair(streamId, 0)).first;
 	size_t amount = size_t(std::max(ptrdiff_t(it->second) + delta, ptrdiff_t(0)));
 	if (amount == 0)
@@ -882,19 +896,42 @@ optional<milliseconds> SctpTransport::rtt() {
 void SctpTransport::UpcallCallback(struct socket *, void *arg, int /* flags */) {
 	auto *transport = static_cast<SctpTransport *>(arg);
 
-	if (auto lock = Instances->lock(transport))
+	if (auto locked = Instances->lock(transport))
 		transport->handleUpcall();
 }
 
 int SctpTransport::WriteCallback(void *ptr, void *data, size_t len, uint8_t tos, uint8_t set_df) {
 	auto *transport = static_cast<SctpTransport *>(ptr);
 
+	// Set the CRC32 ourselves as we have enabled CRC32 offloading
+	if (len >= 12) {
+		uint32_t *checksum = reinterpret_cast<uint32_t *>(data) + 2;
+		*checksum = 0;
+		*checksum = usrsctp_crc32c(data, len);
+	}
+
 	// Workaround for sctplab/usrsctp#405: Send callback is invoked on already closed socket
 	// https://github.com/sctplab/usrsctp/issues/405
-	if (auto lock = Instances->lock(transport))
+	if (auto locked = Instances->lock(transport))
 		return transport->handleWrite(static_cast<byte *>(data), len, tos, set_df);
 	else
 		return -1;
+}
+
+void SctpTransport::DebugCallback(const char *format, ...) {
+	const size_t bufferSize = 1024;
+	char buffer[bufferSize];
+	va_list va;
+	va_start(va, format);
+	int len = std::vsnprintf(buffer, bufferSize, format, va);
+	va_end(va);
+	if (len <= 0)
+		return;
+
+	len = std::min(len, int(bufferSize - 1));
+	buffer[len - 1] = '\0'; // remove newline
+
+	PLOG_VERBOSE << "usrsctp: " << buffer; // usrsctp debug as verbose
 }
 
 } // namespace rtc::impl
