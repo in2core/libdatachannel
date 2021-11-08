@@ -340,7 +340,7 @@ RtcpNackResponder::processIncomingBinaryMessage(ChainedMessagesProduct messages)
     const ChainedMessagesProduct incoming_packets = incoming->empty() ? nullptr : incoming;
     if (!nacks_data.empty()) {
         const auto nack_size = RTCP_NACK::Size(1);
-        const auto msg = make_message(nacks_data.size() * nack_size, Message::Type::Control);
+        const auto msg = make_message(nacks_data.size() * nack_size, impl::Message::Type::Control);
         for (unsigned i = 0; i < nacks_data.size(); i += 1) {
             const auto nack = reinterpret_cast<RTCP_NACK *>(msg->data() + nack_size * i);
             const auto nack_data = nacks_data[i];
