@@ -20,7 +20,6 @@
 #include "rtc.hpp"
 
 #include "impl/internals.hpp"
-#include "impl/message.hpp"
 
 #include <chrono>
 #include <exception>

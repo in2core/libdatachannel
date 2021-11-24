@@ -66,25 +66,19 @@ using std::variant;
 using std::weak_ptr;
 
 using binary = std::vector<byte>;
-using binary_ptr = std::shared_ptr<binary>;
+using binary_ptr = shared_ptr<binary>;
+using message_variant = variant<binary, string>;
 
+using std::int16_t;
+using std::int32_t;
+using std::int64_t;
+using std::int8_t;
 using std::ptrdiff_t;
 using std::size_t;
 using std::uint16_t;
 using std::uint32_t;
 using std::uint64_t;
 using std::uint8_t;
-
-using message_variant = variant<binary, string>;
-
-namespace impl {
-
-struct Message;
-
-}
-
-using message_ptr = shared_ptr<impl::Message>;
-using message_callback = std::function<void(message_ptr message)>;
 
 } // namespace rtc
 

@@ -28,8 +28,6 @@
 
 #include "mediahandlerrootelement.hpp"
 
-#include "impl/message.hpp"
-
 namespace rtc {
 
 message_ptr MediaHandlerRootElement::reduce(ChainedMessagesProduct messages) {
@@ -46,7 +44,7 @@ message_ptr MediaHandlerRootElement::reduce(ChainedMessagesProduct messages) {
 		if (filtered_messages.empty()) {
 			return nullptr;
 		}
-        const auto msgs = impl::make_message(total_size);
+        const auto msgs = make_message(total_size);
 		auto data = reinterpret_cast<uint8_t *>(msgs->data());
 		*data = 0;
 		data = data + 1;
