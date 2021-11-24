@@ -1,27 +1,29 @@
-/*
- * libdatachannel streamer example
+/**
  * Copyright (c) 2020 Filip Klembara (in2core)
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
- * This program is distributed in the hope that it will be useful,
+ * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef NalUnit_hpp
-#define NalUnit_hpp
+#ifndef RTC_NAL_UNIT_H
+#define RTC_NAL_UNIT_H
 
 #if RTC_ENABLE_MEDIA
 
-#include "include.hpp"
+#include "common.hpp"
+
+#include <cassert>
 
 namespace rtc {
 
@@ -29,6 +31,8 @@ namespace rtc {
 
 /// Nalu header
 struct RTC_CPP_EXPORT NalUnitHeader {
+	uint8_t _first = 0;
+
 	bool forbiddenBit() { return _first >> 7; }
 	uint8_t nri() { return _first >> 5 & 0x03; }
 	uint8_t unitType() { return _first & 0x1F; }
@@ -36,46 +40,40 @@ struct RTC_CPP_EXPORT NalUnitHeader {
 	void setForbiddenBit(bool isSet) { _first = (_first & 0x7F) | (isSet << 7); }
 	void setNRI(uint8_t nri) { _first = (_first & 0x9F) | ((nri & 0x03) << 5); }
 	void setUnitType(uint8_t type) { _first = (_first & 0xE0) | (type & 0x1F); }
-
-private:
-	uint8_t _first = 0;
 };
 
 /// Nalu fragment header
 struct RTC_CPP_EXPORT NalUnitFragmentHeader {
+	uint8_t _first = 0;
+
 	bool isStart() { return _first >> 7; }
 	bool reservedBit6() { return (_first >> 6) & 0x01; }
 	bool isEnd() { return (_first >> 5) & 0x01; }
 	uint8_t unitType() { return _first & 0x1F; }
 
 	void setStart(bool isSet) { _first = (_first & 0x7F) | (isSet << 7); }
-	void setEnd(bool isSet) { _first = (_first & 0xDF) | (isSet << 6); }
-	void setReservedBit6(bool isSet) { _first = (_first & 0xBF) | (isSet << 5); }
+	void setEnd(bool isSet) { _first = (_first & 0xBF) | (isSet << 6); }
+	void setReservedBit6(bool isSet) { _first = (_first & 0xDF) | (isSet << 5); }
 	void setUnitType(uint8_t type) { _first = (_first & 0xE0) | (type & 0x1F); }
-
-private:
-	uint8_t _first = 0;
 };
 
 #pragma pack(pop)
 
 /// Nal unit
-struct RTC_CPP_EXPORT NalUnit : rtc::binary {
+struct RTC_CPP_EXPORT NalUnit : binary {
 	NalUnit(const NalUnit &unit) = default;
-	NalUnit(size_t size, bool includingHeader = true)
-	    : rtc::binary(size + (includingHeader ? 0 : 1)) {}
+	NalUnit(size_t size, bool includingHeader = true) : binary(size + (includingHeader ? 0 : 1)) {}
 
-	template <typename Iterator>
-	NalUnit(Iterator begin_, Iterator end_) : rtc::binary(begin_, end_) {}
+	template <typename Iterator> NalUnit(Iterator begin_, Iterator end_) : binary(begin_, end_) {}
 
-	NalUnit(rtc::binary &&data) : rtc::binary(std::move(data)) {}
+	NalUnit(binary &&data) : binary(std::move(data)) {}
 
-	NalUnit() : rtc::binary(1) {}
+	NalUnit() : binary(1) {}
 
 	bool forbiddenBit() { return header()->forbiddenBit(); }
 	uint8_t nri() { return header()->nri(); }
 	uint8_t unitType() { return header()->unitType(); }
-	rtc::binary payload() {
+	binary payload() {
 		assert(size() >= 1);
 		return {begin() + 1, end()};
 	}
@@ -83,7 +81,7 @@ struct RTC_CPP_EXPORT NalUnit : rtc::binary {
 	void setForbiddenBit(bool isSet) { header()->setForbiddenBit(isSet); }
 	void setNRI(uint8_t nri) { header()->setNRI(nri); }
 	void setUnitType(uint8_t type) { header()->setUnitType(type); }
-	void setPayload(rtc::binary payload) {
+	void setPayload(binary payload) {
 		assert(size() >= 1);
 		erase(begin() + 1, end());
 		insert(end(), payload.begin(), payload.end());
@@ -101,13 +99,14 @@ struct RTC_CPP_EXPORT NalUnitFragmentA : NalUnit {
 	enum class FragmentType { Start, Middle, End };
 
 	NalUnitFragmentA(FragmentType type, bool forbiddenBit, uint8_t nri, uint8_t unitType,
-	                 rtc::binary data);
+	                 binary data);
 
-	static std::vector<NalUnitFragmentA> fragmentsFrom(NalUnit nalu, uint16_t maximumFragmentSize);
+	static std::vector<shared_ptr<NalUnitFragmentA>> fragmentsFrom(shared_ptr<NalUnit> nalu,
+	                                                               uint16_t maximumFragmentSize);
 
 	uint8_t unitType() { return fragmentHeader()->unitType(); }
 
-	rtc::binary payload() {
+	binary payload() {
 		assert(size() >= 2);
 		return {begin() + 2, end()};
 	}
@@ -124,7 +123,7 @@ struct RTC_CPP_EXPORT NalUnitFragmentA : NalUnit {
 
 	void setUnitType(uint8_t type) { fragmentHeader()->setUnitType(type); }
 
-	void setPayload(rtc::binary payload) {
+	void setPayload(binary payload) {
 		assert(size() >= 2);
 		erase(begin() + 2, end());
 		insert(end(), payload.begin(), payload.end());
@@ -142,15 +141,15 @@ protected:
 	const uint8_t nal_type_fu_A = 28;
 };
 
-class RTC_CPP_EXPORT NalUnits : public std::vector<NalUnit> {
+class RTC_CPP_EXPORT NalUnits : public std::vector<shared_ptr<NalUnit>> {
 public:
-	static const uint16_t defaultMaximumFragmentSize = 1100;
-	std::vector<rtc::binary>
-	generateFragments(uint16_t maximumFragmentSize = NalUnits::defaultMaximumFragmentSize);
+	static const uint16_t defaultMaximumFragmentSize =
+	    uint16_t(RTC_DEFAULT_MTU - 12 - 8 - 40); // SRTP/UDP/IPv6
+	std::vector<shared_ptr<binary>> generateFragments(uint16_t maximumFragmentSize);
 };
 
 } // namespace rtc
 
 #endif /* RTC_ENABLE_MEDIA */
 
-#endif /* NalUnit_hpp */
+#endif /* RTC_NAL_UNIT_H */

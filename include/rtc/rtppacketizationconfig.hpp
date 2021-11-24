@@ -1,23 +1,23 @@
-/*
- * libdatachannel streamer example
+/**
  * Copyright (c) 2020 Filip Klembara (in2core)
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
- * This program is distributed in the hope that it will be useful,
+ * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef RTPPacketizationConfig_hpp
-#define RTPPacketizationConfig_hpp
+#ifndef RTC_RTP_PACKETIZATION_CONFIG_H
+#define RTC_RTP_PACKETIZATION_CONFIG_H
 
 #if RTC_ENABLE_MEDIA
 
@@ -26,10 +26,10 @@
 namespace rtc {
 
 /// RTP configuration used in packetization process
-class RTC_CPP_EXPORT RTPPacketizationConfig {
+class RTC_CPP_EXPORT RtpPacketizationConfig {
 	uint32_t _startTimestamp = 0;
 	double _startTime_s = 0;
-	RTPPacketizationConfig(const RTPPacketizationConfig &) = delete;
+	RtpPacketizationConfig(const RtpPacketizationConfig &) = delete;
 
 public:
 	const SSRC ssrc;
@@ -38,11 +38,31 @@ public:
 	const uint32_t clockRate;
 	const double &startTime_s = _startTime_s;
 	const uint32_t &startTimestamp = _startTimestamp;
+	const uint8_t videoOrientationId;
 
 	/// current sequence number
 	uint16_t sequenceNumber;
 	/// current timestamp
 	uint32_t timestamp;
+	/// Current video orientation
+	///
+	/// Bit#       7  6  5  4  3  2  1  0
+	/// Definition 0  0  0  0  C  F  R1 R0
+	///
+	/// C
+	///   0 - Front-facing camera (use this if unsure)
+	///   1 - Back-facing camera
+	///
+	/// F
+	///   0 - No Flip
+	///   1 - Horizontal flip
+	///
+	/// R1 R0 - CW rotation that receiver must apply
+	///   0 - 0 degrees
+	///   1 - 90 degrees
+	///   2 - 180 degrees
+	///   3 - 270 degrees
+	uint8_t videoOrientation = 0;
 
 	enum class EpochStart : unsigned long long {
 		T1970 = 2208988800, // number of seconds between 1970 and 1900
@@ -55,7 +75,7 @@ public:
 	/// @param startTimestamp Corresponding timestamp for given start time (current timestamp will
 	/// be used if value is nullopt)
 	void setStartTime(double startTime_s, EpochStart epochStart,
-	                  std::optional<uint32_t> startTimestamp = std::nullopt);
+	                  optional<uint32_t> startTimestamp = std::nullopt);
 
 	/// Construct RTP configuration used in packetization process
 	/// @param ssrc SSRC of source
@@ -65,9 +85,10 @@ public:
 	/// @param sequenceNumber Initial sequence number of RTP packets (random number is choosed if
 	/// nullopt)
 	/// @param timestamp Initial timastamp of RTP packets (random number is choosed if nullopt)
-	RTPPacketizationConfig(SSRC ssrc, std::string cname, uint8_t payloadType, uint32_t clockRate,
-	                       std::optional<uint16_t> sequenceNumber = std::nullopt,
-	                       std::optional<uint32_t> timestamp = std::nullopt);
+	RtpPacketizationConfig(SSRC ssrc, std::string cname, uint8_t payloadType, uint32_t clockRate,
+	                       optional<uint16_t> sequenceNumber = std::nullopt,
+	                       optional<uint32_t> timestamp = std::nullopt,
+	                       uint8_t videoOrientationId = 0);
 
 	/// Convert timestamp to seconds
 	/// @param timestamp Timestamp
@@ -92,4 +113,4 @@ public:
 
 #endif /* RTC_ENABLE_MEDIA */
 
-#endif /* RTPPacketizationConfig_hpp */
+#endif /* RTC_RTP_PACKETIZATION_CONFIG_H */
