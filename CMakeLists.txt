@@ -62,6 +62,7 @@ set(LIBDATACHANNEL_SOURCES
 	${CMAKE_CURRENT_SOURCE_DIR}/src/h264packetizationhandler.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/mediachainablehandler.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/mediahandlerelement.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/src/genericmediahandlerelement.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/mediahandlerrootelement.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/rtcpnackresponder.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/rtp.cpp
@@ -97,6 +98,7 @@ set(LIBDATACHANNEL_HEADERS
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/h264packetizationhandler.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/mediachainablehandler.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/mediahandlerelement.hpp
+	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/genericmediahandlerelement.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/mediahandlerrootelement.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/rtcpnackresponder.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/utils.hpp

@@ -43,7 +43,7 @@ struct RTC_CPP_EXPORT ChainedOutgoingProduct {
 /// Incoming messages with response
 struct RTC_CPP_EXPORT ChainedIncomingProduct {
 	ChainedIncomingProduct(ChainedMessagesProduct incoming = nullptr,
-	                       ChainedMessagesProduct outgoing = nullptr);
+						   ChainedOutgoingProduct outgoing = ChainedOutgoingProduct());
 	const ChainedMessagesProduct incoming;
 	const ChainedOutgoingProduct outgoing;
 };

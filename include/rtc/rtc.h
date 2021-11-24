@@ -247,6 +247,7 @@ typedef struct {
 	const char *name;    // optional
 	const char *msid;    // optional
 	const char *trackId; // optional, track ID used in MSID
+	const char *profile; // optional
 } rtcTrackInit;
 
 RTC_EXPORT int rtcSetTrackCallback(int pc, rtcTrackCallbackFunc cb);
@@ -301,6 +302,24 @@ RTC_EXPORT int rtcSetH264PacketizationHandler(int tr, const rtcPacketizationHand
 
 // Set OpusPacketizationHandler for track
 RTC_EXPORT int rtcSetOpusPacketizationHandler(int tr, const rtcPacketizationHandlerInit *init);
+
+typedef struct {
+	uint8_t * message;
+	unsigned long size;
+} rtcChainedMessagesProductElement;
+
+typedef void(RTC_API *rtcIncomingBinaryMessageCallback)(int tr, void*, rtcChainedMessagesProductElement* messages, unsigned long messagesCount);
+typedef void(RTC_API *rtcIncomingControlMessageCallback)(int tr, void*, uint8_t* control, unsigned long controlSize);
+typedef void(RTC_API *rtcOutgoingBinaryMessageCallback)(int tr, void*, rtcChainedMessagesProductElement* messages, unsigned long messagesCount,
+														uint8_t* control, unsigned long controlSize);
+typedef void(RTC_API *rtcOutgoingControlMessageCallback)(int tr, void*, uint8_t* control, unsigned long controlSize);
+
+RTC_EXPORT int rtcChainReadOnlyMediaMessageHandler(int tr,
+												   void * userPointer,
+												   rtcIncomingBinaryMessageCallback incomingBinaryMessage,
+												   rtcIncomingControlMessageCallback incomingControlMessage,
+												   rtcOutgoingBinaryMessageCallback outgoingBinaryMessage,
+												   rtcOutgoingControlMessageCallback outgoingControlMessage);
 
 // Chain RtcpSrReporter to handler chain for given track
 RTC_EXPORT int rtcChainRtcpSrReporter(int tr);

@@ -43,6 +43,23 @@ OpusRtpPacketizer::processOutgoingBinaryMessage(ChainedMessagesProduct messages,
 	return {packets, control};
 }
 
+ChainedIncomingProduct
+OpusRtpPacketizer::processIncomingBinaryMessage(ChainedMessagesProduct messages) {
+	auto payloads = make_chained_messages_product();
+	payloads->reserve(messages->size());
+	for(auto message : *messages) {
+		auto payload = depacketize(message);
+		if (payload) {
+			payloads->push_back(payload);
+		}
+	}
+	if (payloads->empty()) {
+		return {};
+	} else {
+		return {payloads};
+	}
+}
+
 } // namespace rtc
 
 #endif /* RTC_ENABLE_MEDIA */
