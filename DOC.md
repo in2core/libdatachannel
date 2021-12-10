@@ -50,7 +50,9 @@ An optional call to `rtcPreload` preloads the global resources used by the libra
 void rtcCleanup(void)
 ```
 
-An optional call to `rtcCleanup` requests unloading of the global resources used by the library. If all created PeerConnections are deleted, unloading will happen immediately and the call will block until unloading is done, otherwise unloading will happen as soon as the last PeerConnection is deleted. If resources are already unloaded, the call has no effect.
+An optional call to `rtcCleanup` unloads the global resources used by the library. The call will block until unloading is done. If Peer Connections, Data Channels, Tracks, or WebSockets created through this API still exist, they will be destroyed. If resources are already unloaded, the call has no effect.
+
+Warning: This function requires all Peer Connections, Data Channels, Tracks, and WebSockets to be destroyed before returning, meaning all callbacks must return before this function returns. Therefore, it must never be called from a callback.
 
 #### rtcSetUserPointer
 
@@ -460,7 +462,7 @@ Arguments:
 
 Return value: the buffered amount or a negative error code
 
-#### rtcGetBufferedAmountLowThreshold
+#### rtcSetBufferedAmountLowThreshold
 
 ```
 int rtcSetBufferedAmountLowThreshold(int id, int amount)
@@ -473,7 +475,7 @@ Arguments:
 - `id`: the channel identifier
 - `amount`: the new buffer level threshold
 
-Return value: the identifier of the new WebSocket or a negative error code
+Return value: `RTC_ERR_SUCCESS` or a negative error code
 
 #### rtcReceiveMessage
 
