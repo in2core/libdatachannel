@@ -29,11 +29,6 @@
 using namespace std::chrono;
 
 namespace rtc {
-
-RtcpNackResponder::OutgoingStorage::Element::Element(binary_ptr packet, uint16_t sequenceNumber,
-                                             shared_ptr<Element> next)
-: packet(packet), sequenceNumber(sequenceNumber), next(next) {}
-
 unsigned RtcpNackResponder::OutgoingStorage::size() { return unsigned(storage.size()); }
 
 RtcpNackResponder::OutgoingStorage::OutgoingStorage(unsigned _maximumSize) : maximumSize(_maximumSize) {
@@ -43,8 +38,12 @@ RtcpNackResponder::OutgoingStorage::OutgoingStorage(unsigned _maximumSize) : max
 
 optional<binary_ptr> RtcpNackResponder::OutgoingStorage::get(uint16_t sequenceNumber) {
 	auto position = storage.find(sequenceNumber);
-	return position != storage.end() ? std::make_optional(storage.at(sequenceNumber)->packet)
+	return position != storage.end() ? std::make_optional(storage.at(sequenceNumber))
 	                                 : nullopt;
+}
+
+void RtcpNackResponder::OutgoingStorage::remove(uint16_t sequenceNumber) {
+	storage.erase(sequenceNumber);
 }
 
 void RtcpNackResponder::OutgoingStorage::store(binary_ptr packet) {
@@ -54,26 +53,20 @@ void RtcpNackResponder::OutgoingStorage::store(binary_ptr packet) {
 	auto rtp = reinterpret_cast<RtpHeader *>(packet->data());
 	auto sequenceNumber = rtp->seqNumber();
 
-	assert((storage.empty() && !oldest && !newest) || (!storage.empty() && oldest && newest));
+	storage.emplace(sequenceNumber, packet);
+	packetOrder.push(sequenceNumber);
 
-	if (size() == 0) {
-		newest = std::make_shared<Element>(packet, sequenceNumber);
-		oldest = newest;
-	} else {
-		auto current = std::make_shared<Element>(packet, sequenceNumber);
-		newest->next = current;
-		newest = current;
+	while (size() > maximumSize && packetOrder.size() > maximumSize) {
+		const auto sequenceNumber = packetOrder.front();
+		packetOrder.pop();
+		storage.erase(sequenceNumber);
 	}
+}
 
-	storage.emplace(sequenceNumber, newest);
-
-	if (size() > maximumSize) {
-		assert(oldest);
-		if (oldest) {
-			storage.erase(oldest->sequenceNumber);
-			oldest = oldest->next;
-		}
-	}
+optional<binary_ptr> RtcpNackResponder::OutgoingStorage::getAndRemove(uint16_t sequenceNumber) {
+	const auto packet = get(sequenceNumber);
+	remove(sequenceNumber);
+	return packet;
 }
 
 
@@ -288,7 +281,7 @@ RtcpNackResponder::processIncomingControlMessage(message_ptr message) {
 		}
 		packets->reserve(packets->size() + missingSequenceNumbers.size());
 		for (auto sequenceNumber : missingSequenceNumbers) {
-			auto optPacket = outgoingStorage->get(sequenceNumber);
+			auto optPacket = outgoingStorage->getAndRemove(sequenceNumber);
 			if (optPacket.has_value()) {
 				auto packet = optPacket.value();
 				packets->push_back(packet);

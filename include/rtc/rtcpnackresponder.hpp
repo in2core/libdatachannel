@@ -27,6 +27,7 @@
 #include <unordered_map>
 #include <map>
 #include <set>
+#include <queue>
 
 namespace rtc {
 
@@ -34,23 +35,9 @@ class RTC_CPP_EXPORT RtcpNackResponder final : public MediaHandlerElement {
 
 	/// Packet storage
 	class RTC_CPP_EXPORT OutgoingStorage {
-
-		/// Packet storage element
-		struct RTC_CPP_EXPORT Element {
-			Element(binary_ptr packet, uint16_t sequenceNumber, shared_ptr<Element> next = nullptr);
-			const binary_ptr packet;
-			const uint16_t sequenceNumber;
-			/// Pointer to newer element
-			shared_ptr<Element> next = nullptr;
-		};
-
-		/// Oldest packet in storage
-		shared_ptr<Element> oldest = nullptr;
-		/// Newest packet in storage
-		shared_ptr<Element> newest = nullptr;
-
 		/// Inner storage
-		std::unordered_map<uint16_t, shared_ptr<Element>> storage{};
+		std::unordered_map<uint16_t, binary_ptr> storage{};
+		std::queue<uint16_t> packetOrder{};
 
 		/// Maximum storage size
 		const unsigned maximumSize;
@@ -58,13 +45,19 @@ class RTC_CPP_EXPORT RtcpNackResponder final : public MediaHandlerElement {
 		/// Returnst current size
 		unsigned size();
 
+		/// Returns packet with given sequence number
+		optional<binary_ptr> get(uint16_t sequenceNumber);
+
+		/// Remove packet based on sequence number
+		void remove(uint16_t sequenceNumber);
+
 	public:
 		static const unsigned defaultMaximumSize = 512;
 
-		OutgoingStorage(unsigned _maximumSize);
+		/// Get and remove packet with given sequence number
+		optional<binary_ptr> getAndRemove(uint16_t sequenceNumber);
 
-		/// Returns packet with given sequence number
-		optional<binary_ptr> get(uint16_t sequenceNumber);
+		OutgoingStorage(unsigned _maximumSize);
 
 		/// Stores packet
 		/// @param packet Packet
