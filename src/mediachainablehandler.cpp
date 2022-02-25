@@ -121,6 +121,7 @@ message_ptr MediaChainableHandler::handleOutgoingControl(message_ptr msg) {
 }
 
 message_ptr MediaChainableHandler::outgoing(message_ptr ptr) {
+    std::lock_guard lock(mutex);
 	assert(ptr);
 	if (!ptr) {
 		LOG_ERROR << "Outgoing message is nullptr, ignoring";
@@ -135,6 +136,7 @@ message_ptr MediaChainableHandler::outgoing(message_ptr ptr) {
 }
 
 message_ptr MediaChainableHandler::incoming(message_ptr ptr) {
+    std::lock_guard lock(mutex);
 	if (!ptr) {
 		LOG_ERROR << "Incoming message is nullptr, ignoring";
 		return nullptr;
