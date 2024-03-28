@@ -280,7 +280,7 @@ bool TcpTransport::trySendMessage(message_ptr &message) {
 #else
 		int flags = MSG_NOSIGNAL;
 #endif
-		int len = ::send(mSock, data, int(size), flags);
+		int len = (int)::send(mSock, data, int(size), flags);
 		if (len < 0) {
 			if (sockerrno == SEAGAIN || sockerrno == SEWOULDBLOCK) {
 				message = make_message(message->end() - size, message->end());
@@ -364,7 +364,7 @@ void TcpTransport::runLoop() {
 
 			if (pfd[0].revents & POLLIN) {
 				char buffer[bufferSize];
-				int len = ::recv(mSock, buffer, bufferSize, 0);
+				int len = (int)::recv(mSock, buffer, bufferSize, 0);
 				if (len < 0) {
 					if (sockerrno == SEAGAIN || sockerrno == SEWOULDBLOCK) {
 						continue;

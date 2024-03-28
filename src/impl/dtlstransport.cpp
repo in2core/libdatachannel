@@ -557,7 +557,7 @@ void DtlsTransport::runRecvLoop() {
 			optional<milliseconds> duration;
 			if (state() == State::Connecting) {
 				// Warning: This function breaks the usual return value convention
-				ret = DTLSv1_handle_timeout(mSsl);
+				ret = (int)DTLSv1_handle_timeout(mSsl);
 				if (ret < 0) {
 					throw std::runtime_error("Handshake timeout"); // write BIO can't fail
 				} else if (ret > 0) {
