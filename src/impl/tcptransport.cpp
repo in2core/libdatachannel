@@ -1,23 +1,14 @@
 /**
  * Copyright (c) 2020 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #include "tcptransport.hpp"
 #include "internals.hpp"
+#include "threadpool.hpp"
 
 #if RTC_ENABLE_WEBSOCKET
 
@@ -30,13 +21,38 @@
 
 namespace rtc::impl {
 
+using namespace std::placeholders;
 using namespace std::chrono_literals;
 using std::chrono::duration_cast;
 using std::chrono::milliseconds;
 
+namespace {
+
+bool unmap_inet6_v4mapped(struct sockaddr *sa, socklen_t *len) {
+	if (sa->sa_family != AF_INET6)
+		return false;
+
+	const auto *sin6 = reinterpret_cast<struct sockaddr_in6 *>(sa);
+	if (!IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr))
+		return false;
+
+	struct sockaddr_in6 copy = *sin6;
+	sin6 = &copy;
+
+	auto *sin = reinterpret_cast<struct sockaddr_in *>(sa);
+	std::memset(sin, 0, sizeof(*sin));
+	sin->sin_family = AF_INET;
+	sin->sin_port = sin6->sin6_port;
+	std::memcpy(&sin->sin_addr, reinterpret_cast<const uint8_t *>(&sin6->sin6_addr) + 12, 4);
+	*len = sizeof(*sin);
+	return true;
+}
+
+}
+
 TcpTransport::TcpTransport(string hostname, string service, state_callback callback)
     : Transport(nullptr, std::move(callback)), mIsActive(true), mHostname(std::move(hostname)),
-      mService(std::move(service)) {
+      mService(std::move(service)), mSock(INVALID_SOCKET) {
 
 	PLOG_DEBUG << "Initializing TCP transport";
 }
@@ -46,16 +62,16 @@ TcpTransport::TcpTransport(socket_t sock, state_callback callback)
 
 	PLOG_DEBUG << "Initializing TCP transport with socket";
 
-	// Set non-blocking
-	ctl_t b = 1;
-	if (::ioctlsocket(mSock, FIONBIO, &b) < 0)
-		throw std::runtime_error("Failed to set socket non-blocking mode");
+	// Configure socket
+	configureSocket();
 
 	// Retrieve hostname and service
 	struct sockaddr_storage addr;
 	socklen_t addrlen = sizeof(addr);
 	if (::getpeername(mSock, reinterpret_cast<struct sockaddr *>(&addr), &addrlen) < 0)
 		throw std::runtime_error("getsockname failed");
+
+	unmap_inet6_v4mapped(reinterpret_cast<struct sockaddr *>(&addr), &addrlen);
 
 	char node[MAX_NUMERICNODE_LEN];
 	char serv[MAX_NUMERICSERV_LEN];
@@ -68,37 +84,35 @@ TcpTransport::TcpTransport(socket_t sock, state_callback callback)
 	mService = serv;
 }
 
-TcpTransport::~TcpTransport() { stop(); }
+TcpTransport::~TcpTransport() { close(); }
 
-void TcpTransport::start() {
-	Transport::start();
-
-	PLOG_DEBUG << "Starting TCP recv thread";
-	mThread = std::thread(&TcpTransport::runLoop, this);
+void TcpTransport::onBufferedAmount(amount_callback callback) {
+	mBufferedAmountCallback = std::move(callback);
 }
 
-bool TcpTransport::stop() {
-	if (!Transport::stop())
-		return false;
+void TcpTransport::setReadTimeout(std::chrono::milliseconds readTimeout) {
+	mReadTimeout = readTimeout;
+}
 
-	PLOG_DEBUG << "Waiting for TCP recv thread";
-	close();
-	mThread.join();
-	return true;
+void TcpTransport::start() {
+	if (mSock == INVALID_SOCKET) {
+		connect();
+	} else {
+		changeState(State::Connected);
+		setPoll(PollService::Direction::In);
+	}
 }
 
 bool TcpTransport::send(message_ptr message) {
-	std::unique_lock lock(mSockMutex);
-	if (state() == State::Connecting)
-		throw std::runtime_error("Connection is not open");
+	std::lock_guard lock(mSendMutex);
 
 	if (state() != State::Connected)
-		return false;
+		throw std::runtime_error("Connection is not open");
 
-	if (!message)
+	if (!message || message->size() == 0)
 		return trySendQueue();
 
-	PLOG_VERBOSE << "Send size=" << (message ? message->size() : 0);
+	PLOG_VERBOSE << "Send size=" << message->size();
 	return outgoing(message);
 }
 
@@ -111,61 +125,150 @@ void TcpTransport::incoming(message_ptr message) {
 }
 
 bool TcpTransport::outgoing(message_ptr message) {
-	// mSockMutex must be locked
+	// mSendMutex must be locked
 	// Flush the queue, and if nothing is pending, try to send directly
 	if (trySendQueue() && trySendMessage(message))
 		return true;
 
 	mSendQueue.push(message);
-	mInterrupter.interrupt(); // so the thread waits for writability
+	updateBufferedAmount(ptrdiff_t(message->size()));
+	setPoll(PollService::Direction::Both);
 	return false;
 }
 
+bool TcpTransport::isActive() const { return mIsActive; }
+
 string TcpTransport::remoteAddress() const { return mHostname + ':' + mService; }
 
-void TcpTransport::connect(const string &hostname, const string &service) {
-	PLOG_DEBUG << "Connecting to " << hostname << ":" << service;
+void TcpTransport::connect() {
+	if (state() == State::Connecting)
+		throw std::logic_error("TCP connection is already in progress");
 
-	struct addrinfo hints = {};
-	hints.ai_family = AF_UNSPEC;
-	hints.ai_socktype = SOCK_STREAM;
-	hints.ai_protocol = IPPROTO_TCP;
-	hints.ai_flags = AI_ADDRCONFIG;
+	if (state() == State::Connected)
+		throw std::logic_error("TCP is already connected");
 
-	struct addrinfo *result = nullptr;
-	if (getaddrinfo(hostname.c_str(), service.c_str(), &hints, &result))
-		throw std::runtime_error("Resolution failed for \"" + hostname + ":" + service + "\"");
+	PLOG_DEBUG << "Connecting to " << mHostname << ":" << mService;
+	changeState(State::Connecting);
 
-	try {
-		for (auto p = result; p; p = p->ai_next) {
-			try {
-				connect(p->ai_addr, socklen_t(p->ai_addrlen));
-
-				PLOG_INFO << "Connected to " << hostname << ":" << service;
-				freeaddrinfo(result);
-				return;
-
-			} catch (const std::runtime_error &e) {
-				if (p->ai_next) {
-					PLOG_DEBUG << e.what();
-				} else {
-					PLOG_WARNING << e.what();
-				}
-			}
-		}
-
-		std::ostringstream msg;
-		msg << "Connection to " << hostname << ":" << service << " failed";
-		throw std::runtime_error(msg.str());
-
-	} catch (...) {
-		freeaddrinfo(result);
-		throw;
-	}
+	ThreadPool::Instance().enqueue(weak_bind(&TcpTransport::resolve, this));
 }
 
-void TcpTransport::connect(const sockaddr *addr, socklen_t addrlen) {
-	std::unique_lock lock(mSockMutex);
+void TcpTransport::resolve() {
+	std::lock_guard lock(mSendMutex);
+	mResolved.clear();
+
+	if (state() != State::Connecting)
+		return; // Cancelled
+
+	try {
+		PLOG_DEBUG << "Resolving " << mHostname << ":" << mService;
+
+		struct addrinfo hints = {};
+		hints.ai_family = AF_UNSPEC;
+		hints.ai_socktype = SOCK_STREAM;
+		hints.ai_protocol = IPPROTO_TCP;
+		hints.ai_flags = AI_ADDRCONFIG;
+
+		struct addrinfo *result = nullptr;
+		if (getaddrinfo(mHostname.c_str(), mService.c_str(), &hints, &result))
+			throw std::runtime_error("Resolution failed for \"" + mHostname + ":" + mService +
+			                         "\"");
+
+		try {
+			struct addrinfo *ai = result;
+			while (ai) {
+				struct sockaddr_storage addr;
+				std::memcpy(&addr, ai->ai_addr, ai->ai_addrlen);
+				mResolved.emplace_back(addr, socklen_t(ai->ai_addrlen));
+				ai = ai->ai_next;
+			}
+
+		} catch (...) {
+			freeaddrinfo(result);
+			throw;
+		}
+
+		freeaddrinfo(result);
+
+	} catch (const std::exception &e) {
+		PLOG_WARNING << e.what();
+		changeState(State::Failed);
+		return;
+	}
+
+	ThreadPool::Instance().enqueue(weak_bind(&TcpTransport::attempt, this));
+}
+
+void TcpTransport::attempt() {
+	std::lock_guard lock(mSendMutex);
+
+	if (state() != State::Connecting)
+		return; // Cancelled
+
+	if (mSock == INVALID_SOCKET) {
+		::closesocket(mSock);
+		mSock = INVALID_SOCKET;
+	}
+
+	if (mResolved.empty()) {
+		PLOG_WARNING << "Connection to " << mHostname << ":" << mService << " failed";
+		changeState(State::Failed);
+		return;
+	}
+
+	try {
+		auto [addr, addrlen] = mResolved.front();
+		mResolved.pop_front();
+
+		createSocket(reinterpret_cast<const struct sockaddr *>(&addr), addrlen);
+
+	} catch (const std::runtime_error &e) {
+		PLOG_DEBUG << e.what();
+		ThreadPool::Instance().enqueue(weak_bind(&TcpTransport::attempt, this));
+		return;
+	}
+
+	// Poll out event callback
+	auto callback = [this](PollService::Event event) {
+		try {
+			if (event == PollService::Event::Error)
+				throw std::runtime_error("TCP connection failed");
+
+			if (event == PollService::Event::Timeout)
+				throw std::runtime_error("TCP connection timed out");
+
+			if (event != PollService::Event::Out)
+				return;
+
+			int err = 0;
+			socklen_t errlen = sizeof(err);
+			if (::getsockopt(mSock, SOL_SOCKET, SO_ERROR, reinterpret_cast<char *>(&err),
+			                 &errlen) != 0)
+				throw std::runtime_error("Failed to get socket error code");
+
+			if (err != 0) {
+				std::ostringstream msg;
+				msg << "TCP connection failed, errno=" << err;
+				throw std::runtime_error(msg.str());
+			}
+
+			// Success
+			PLOG_INFO << "TCP connected";
+			changeState(State::Connected);
+			setPoll(PollService::Direction::In);
+
+		} catch (const std::exception &e) {
+			PLOG_DEBUG << e.what();
+			PollService::Instance().remove(mSock);
+			ThreadPool::Instance().enqueue(weak_bind(&TcpTransport::attempt, this));
+		}
+	};
+
+	const auto timeout = 10s;
+	PollService::Instance().add(mSock, {PollService::Direction::Out, timeout, std::move(callback)});
+}
+
+void TcpTransport::createSocket(const struct sockaddr *addr, socklen_t addrlen) {
 	try {
 		char node[MAX_NUMERICNODE_LEN];
 		char serv[MAX_NUMERICSERV_LEN];
@@ -181,17 +284,8 @@ void TcpTransport::connect(const sockaddr *addr, socklen_t addrlen) {
 		if (mSock == INVALID_SOCKET)
 			throw std::runtime_error("TCP socket creation failed");
 
-		// Set non-blocking
-		ctl_t b = 1;
-		if (::ioctlsocket(mSock, FIONBIO, &b) < 0)
-			throw std::runtime_error("Failed to set socket non-blocking mode");
-
-#ifdef __APPLE__
-		// MacOS lacks MSG_NOSIGNAL and requires SO_NOSIGPIPE instead
-		const sockopt_t enabled = 1;
-		if (::setsockopt(mSock, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) < 0)
-			throw std::runtime_error("Failed to disable SIGPIPE for socket");
-#endif
+		// Configure socket
+		configureSocket();
 
 		// Initiate connection
 		int ret = ::connect(mSock, addr, addrlen);
@@ -200,42 +294,6 @@ void TcpTransport::connect(const sockaddr *addr, socklen_t addrlen) {
 			msg << "TCP connection to " << node << ":" << serv << " failed, errno=" << sockerrno;
 			throw std::runtime_error(msg.str());
 		}
-
-		// Wait for connection
-		struct pollfd pfd[1];
-		pfd[0].fd = mSock;
-		pfd[0].events = POLLOUT;
-
-		using clock = std::chrono::steady_clock;
-		auto end = clock::now() + 10s; // TODO: Make the timeout configurable
-
-		do {
-			auto timeout = std::max(clock::duration::zero(), end - clock::now());
-			ret = ::poll(pfd, 1, int(duration_cast<milliseconds>(timeout).count()));
-
-		} while (ret < 0 && (sockerrno == SEINTR || sockerrno == SEAGAIN));
-
-		if (ret < 0)
-			throw std::runtime_error("Failed to wait for socket connection");
-
-		if (!(pfd[0].revents & POLLOUT)) {
-			std::ostringstream msg;
-			msg << "TCP connection to " << node << ":" << serv << " timed out";
-			throw std::runtime_error(msg.str());
-		}
-
-		int err = 0;
-		socklen_t errlen = sizeof(err);
-		if (::getsockopt(mSock, SOL_SOCKET, SO_ERROR, (char *)&err, &errlen) != 0)
-			throw std::runtime_error("Failed to get socket error code");
-
-		if (err != 0) {
-			std::ostringstream msg;
-			msg << "TCP connection to " << node << ":" << serv << " failed, errno=" << err;
-			throw std::runtime_error(msg.str());
-		}
-
-		PLOG_DEBUG << "TCP connection to " << node << ":" << serv << " succeeded";
 
 	} catch (...) {
 		if (mSock != INVALID_SOCKET) {
@@ -246,32 +304,63 @@ void TcpTransport::connect(const sockaddr *addr, socklen_t addrlen) {
 	}
 }
 
+void TcpTransport::configureSocket() {
+	// Set non-blocking
+	ctl_t nbio = 1;
+	if (::ioctlsocket(mSock, FIONBIO, &nbio) < 0)
+		throw std::runtime_error("Failed to set socket non-blocking mode");
+
+	// Disable the Nagle algorithm
+	int nodelay = 1;
+	::setsockopt(mSock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&nodelay),
+	             sizeof(nodelay));
+
+#ifdef __APPLE__
+	// MacOS lacks MSG_NOSIGNAL and requires SO_NOSIGPIPE instead
+	const sockopt_t enabled = 1;
+	if (::setsockopt(mSock, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) < 0)
+		throw std::runtime_error("Failed to disable SIGPIPE for socket");
+#endif
+}
+
+void TcpTransport::setPoll(PollService::Direction direction) {
+	PollService::Instance().add(
+	    mSock, {direction, direction == PollService::Direction::In ? mReadTimeout : nullopt,
+	            std::bind(&TcpTransport::process, this, _1)});
+}
+
 void TcpTransport::close() {
-	std::unique_lock lock(mSockMutex);
+	std::lock_guard lock(mSendMutex);
 	if (mSock != INVALID_SOCKET) {
 		PLOG_DEBUG << "Closing TCP socket";
+		PollService::Instance().remove(mSock);
 		::closesocket(mSock);
 		mSock = INVALID_SOCKET;
 	}
 	changeState(State::Disconnected);
-	mInterrupter.interrupt();
 }
 
 bool TcpTransport::trySendQueue() {
-	// mSockMutex must be locked
+	// mSendMutex must be locked
 	while (auto next = mSendQueue.peek()) {
 		message_ptr message = std::move(*next);
-		if (!trySendMessage(message)) {
+		size_t size = message->size();
+		if (!trySendMessage(message)) { // replaces message
 			mSendQueue.exchange(message);
+			updateBufferedAmount(-ptrdiff_t(size) + ptrdiff_t(message->size()));
 			return false;
 		}
+
 		mSendQueue.pop();
+		updateBufferedAmount(-ptrdiff_t(size));
 	}
+
 	return true;
 }
 
 bool TcpTransport::trySendMessage(message_ptr &message) {
-	// mSockMutex must be locked
+	// mSendMutex must be locked
+
 	auto data = reinterpret_cast<const char *>(message->data());
 	auto size = message->size();
 	while (size) {
@@ -298,95 +387,83 @@ bool TcpTransport::trySendMessage(message_ptr &message) {
 	return true;
 }
 
-void TcpTransport::runLoop() {
-	const size_t bufferSize = 4096;
+void TcpTransport::updateBufferedAmount(ptrdiff_t delta) {
+	// Requires mSendMutex to be locked
 
-	// Connect
-	try {
-		changeState(State::Connecting);
-		if (mSock == INVALID_SOCKET)
-			connect(mHostname, mService);
-
-	} catch (const std::exception &e) {
-		PLOG_ERROR << "TCP connect: " << e.what();
-		changeState(State::Failed);
+	if (delta == 0)
 		return;
-	}
 
-	// Receive loop
+	mBufferedAmount = size_t(std::max(ptrdiff_t(mBufferedAmount) + delta, ptrdiff_t(0)));
+
+	// Synchronously call the buffered amount callback
+	triggerBufferedAmount(mBufferedAmount);
+}
+
+void TcpTransport::triggerBufferedAmount(size_t amount) {
 	try {
-		PLOG_INFO << "TCP connected";
-		changeState(State::Connected);
+		mBufferedAmountCallback(amount);
+	} catch (const std::exception &e) {
+		PLOG_WARNING << "TCP buffered amount callback: " << e.what();
+	}
+}
 
-		while (true) {
-			std::unique_lock lock(mSockMutex);
+void TcpTransport::process(PollService::Event event) {
+	auto self = weak_from_this().lock();
+	if (!self)
+		return;
 
-			if (mSock == INVALID_SOCKET)
-				break;
+	try {
+		switch (event) {
+		case PollService::Event::Error: {
+			PLOG_WARNING << "TCP connection terminated";
+			break;
+		}
 
-			struct pollfd pfd[2];
-			pfd[0].fd = mSock;
-			pfd[0].events = !mSendQueue.empty() ? (POLLIN | POLLOUT) : POLLIN;
-			mInterrupter.prepare(pfd[1]);
+		case PollService::Event::Timeout: {
+			PLOG_VERBOSE << "TCP is idle";
+			incoming(make_message(0));
+			setPoll(PollService::Direction::In);
+			return;
+		}
 
-			using clock = std::chrono::steady_clock;
-			auto end = clock::now() + 10s;
+		case PollService::Event::Out: {
+			if (trySendQueue())
+				setPoll(PollService::Direction::In);
 
-			int ret;
-			lock.unlock();
-			do {
-				auto timeout = std::max(clock::duration::zero(), end - clock::now());
-				ret = ::poll(pfd, 2, int(duration_cast<milliseconds>(timeout).count()));
+			return;
+		}
 
-			} while (ret < 0 && (sockerrno == SEINTR || sockerrno == SEAGAIN));
-			lock.lock();
-
-			if (mSock == INVALID_SOCKET)
-				break;
-
-			if (ret < 0)
-				throw std::runtime_error("Failed to wait on socket");
-
-			if (ret == 0) {
-				PLOG_VERBOSE << "TCP is idle";
-				lock.unlock(); // unlock now since the upper layer might send on incoming
-				incoming(make_message(0));
-				continue;
-			}
-
-			if (pfd[0].revents & POLLNVAL || pfd[0].revents & POLLERR) {
-				throw std::runtime_error("Error while waiting for socket connection");
-			}
-
-			if (pfd[0].revents & POLLOUT) {
-				trySendQueue();
-			}
-
-			if (pfd[0].revents & POLLIN) {
-				char buffer[bufferSize];
-				int len = ::recv(mSock, buffer, bufferSize, 0);
-				if (len < 0) {
-					if (sockerrno == SEAGAIN || sockerrno == SEWOULDBLOCK) {
-						continue;
-					} else {
-						PLOG_WARNING << "TCP connection lost";
-						break;
-					}
-				}
-
-				if (len == 0)
-					break; // clean close
-
-				lock.unlock(); // unlock now since the upper layer might send on incoming
+		case PollService::Event::In: {
+			const size_t bufferSize = 4096;
+			char buffer[bufferSize];
+			int len;
+			while ((len = ::recv(mSock, buffer, bufferSize, 0)) > 0) {
 				auto *b = reinterpret_cast<byte *>(buffer);
 				incoming(make_message(b, b + len));
 			}
+
+			if (len == 0)
+				break; // clean close
+
+			if (sockerrno != SEAGAIN && sockerrno != SEWOULDBLOCK) {
+				PLOG_WARNING << "TCP connection lost";
+				break;
+			}
+
+			return;
 		}
+
+		default:
+			// Ignore
+			return;
+		}
+
 	} catch (const std::exception &e) {
-		PLOG_ERROR << "TCP recv: " << e.what();
+		PLOG_ERROR << e.what();
 	}
 
 	PLOG_INFO << "TCP disconnected";
+	PollService::Instance().remove(mSock);
 	changeState(State::Disconnected);
 	recv(nullptr);
 }

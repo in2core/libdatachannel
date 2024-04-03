@@ -1,26 +1,18 @@
 /**
  * Copyright (c) 2019 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #ifndef RTC_IMPL_CERTIFICATE_H
 #define RTC_IMPL_CERTIFICATE_H
 
+#include "description.hpp" // for CertificateFingerprint
 #include "common.hpp"
 #include "configuration.hpp" // for CertificateType
+#include "init.hpp"
 #include "tls.hpp"
 
 #include <future>
@@ -38,17 +30,25 @@ public:
 #if USE_GNUTLS
 	Certificate(gnutls_x509_crt_t crt, gnutls_x509_privkey_t privkey);
 	gnutls_certificate_credentials_t credentials() const;
-#else
+#elif USE_MBEDTLS
+	Certificate(shared_ptr<mbedtls_x509_crt> crt, shared_ptr<mbedtls_pk_context> pk);
+	std::tuple<shared_ptr<mbedtls_x509_crt>, shared_ptr<mbedtls_pk_context>> credentials() const;
+#else // OPENSSL
 	Certificate(shared_ptr<X509> x509, shared_ptr<EVP_PKEY> pkey);
 	std::tuple<X509 *, EVP_PKEY *> credentials() const;
 #endif
 
-	string fingerprint() const;
+	CertificateFingerprint fingerprint() const;
 
 private:
+	const init_token mInitToken = Init::Instance().token();
+
 #if USE_GNUTLS
 	Certificate(shared_ptr<gnutls_certificate_credentials_t> creds);
 	const shared_ptr<gnutls_certificate_credentials_t> mCredentials;
+#elif USE_MBEDTLS
+	const shared_ptr<mbedtls_x509_crt> mCrt;
+	const shared_ptr<mbedtls_pk_context> mPk;
 #else
 	const shared_ptr<X509> mX509;
 	const shared_ptr<EVP_PKEY> mPKey;
@@ -58,10 +58,12 @@ private:
 };
 
 #if USE_GNUTLS
-string make_fingerprint(gnutls_certificate_credentials_t credentials);
-string make_fingerprint(gnutls_x509_crt_t crt);
+string make_fingerprint(gnutls_certificate_credentials_t credentials, CertificateFingerprint::Algorithm fingerprintAlgorithm);
+string make_fingerprint(gnutls_x509_crt_t crt, CertificateFingerprint::Algorithm fingerprintAlgorithm);
+#elif USE_MBEDTLS
+string make_fingerprint(mbedtls_x509_crt *crt, CertificateFingerprint::Algorithm fingerprintAlgorithm);
 #else
-string make_fingerprint(X509 *x509);
+string make_fingerprint(X509 *x509, CertificateFingerprint::Algorithm fingerprintAlgorithm);
 #endif
 
 using certificate_ptr = shared_ptr<Certificate>;

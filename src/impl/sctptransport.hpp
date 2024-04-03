@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2019-2021 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #ifndef RTC_IMPL_SCTP_TRANSPORT_H
@@ -21,6 +11,7 @@
 
 #include "common.hpp"
 #include "configuration.hpp"
+#include "global.hpp"
 #include "processor.hpp"
 #include "queue.hpp"
 #include "transport.hpp"
@@ -34,7 +25,7 @@
 
 namespace rtc::impl {
 
-class SctpTransport final : public Transport {
+class SctpTransport final : public Transport, public std::enable_shared_from_this<SctpTransport> {
 public:
 	static void Init();
 	static void SetSettings(const SctpSettings &s);
@@ -42,20 +33,26 @@ public:
 
 	using amount_callback = std::function<void(uint16_t streamId, size_t amount)>;
 
-	SctpTransport(shared_ptr<Transport> lower, const Configuration &config, uint16_t port,
+	struct Ports {
+		uint16_t local = DEFAULT_SCTP_PORT;
+		uint16_t remote = DEFAULT_SCTP_PORT;
+	};
+
+	SctpTransport(shared_ptr<Transport> lower, const Configuration &config, Ports ports,
 	              message_callback recvCallback, amount_callback bufferedAmountCallback,
 	              state_callback stateChangeCallback);
 	~SctpTransport();
 
+	void onBufferedAmount(amount_callback callback);
+
 	void start() override;
-	bool stop() override;
+	void stop() override;
 	bool send(message_ptr message) override; // false if buffered
 	bool flush();
 	void closeStream(unsigned int stream);
+	void close();
 
-	void onBufferedAmount(amount_callback callback) {
-		mBufferedAmountCallback = std::move(callback);
-	}
+	unsigned int maxStream() const;
 
 	// Stats
 	void clearStats();
@@ -65,7 +62,7 @@ public:
 
 private:
 	// Order seems wrong but these are the actual values
-	// See https://tools.ietf.org/html/draft-ietf-rtcweb-data-channel-13#section-8
+	// See https://datatracker.ietf.org/doc/html/draft-ietf-rtcweb-data-channel-13#section-8
 	enum PayloadId : uint32_t {
 		PPID_CONTROL = 50,
 		PPID_STRING = 51,
@@ -76,28 +73,33 @@ private:
 		PPID_BINARY_EMPTY = 57
 	};
 
+	struct sockaddr_conn getSockAddrConn(uint16_t port);
+
 	void connect();
 	void shutdown();
-	void close();
 	void incoming(message_ptr message) override;
 	bool outgoing(message_ptr message) override;
 
 	void doRecv();
 	void doFlush();
+	void enqueueRecv();
+	void enqueueFlush();
 	bool trySendQueue();
 	bool trySendMessage(message_ptr message);
 	void updateBufferedAmount(uint16_t streamId, ptrdiff_t delta);
 	void triggerBufferedAmount(uint16_t streamId, size_t amount);
 	void sendReset(uint16_t streamId);
 
-	void handleUpcall();
-	int handleWrite(byte *data, size_t len, uint8_t tos, uint8_t set_df);
+	void handleUpcall() noexcept;
+	int handleWrite(byte *data, size_t len, uint8_t tos, uint8_t set_df) noexcept;
 
 	void processData(binary &&data, uint16_t streamId, PayloadId ppid);
 	void processNotification(const union sctp_notification *notify, size_t len);
 
-	const uint16_t mPort;
+	const size_t mMaxMessageSize;
+	const Ports mPorts;
 	struct socket *mSock;
+	std::optional<uint16_t> mNegotiatedStreamsCount;
 
 	Processor mProcessor;
 	std::atomic<int> mPendingRecvCount = 0;
@@ -105,6 +107,7 @@ private:
 	std::mutex mRecvMutex;
 	std::recursive_mutex mSendMutex; // buffered amount callback is synchronous
 	Queue<message_ptr> mSendQueue;
+	bool mSendShutdown = false;
 	std::map<uint16_t, size_t> mBufferedAmount;
 	amount_callback mBufferedAmountCallback;
 

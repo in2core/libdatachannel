@@ -11,6 +11,7 @@ LIBS=
 LOCALLIBS=libusrsctp.a
 USRSCTP_DIR=deps/usrsctp
 SRTP_DIR=deps/libsrtp
+SRTP_CONFIGURE_FLAGS=
 JUICE_DIR=deps/libjuice
 PLOG_DIR=deps/plog
 
@@ -18,12 +19,19 @@ INCLUDES=-Isrc -Iinclude/rtc -Iinclude -I$(PLOG_DIR)/include -I$(USRSCTP_DIR)/us
 LDLIBS=
 
 USE_GNUTLS ?= 0
+USE_MBEDTLS ?= 0
 ifneq ($(USE_GNUTLS), 0)
-        CPPFLAGS+=-DUSE_GNUTLS=1
+ifneq ($(USE_MBEDTLS), 0)
+$(error Both USE_MBEDTLS and USE_GNUTLS cannot be enabled at the same time)
+endif
+		CPPFLAGS+=-DUSE_GNUTLS=1
         LIBS+=gnutls
+else ifneq ($(USE_MBEDTLS), 0)
+        CPPFLAGS+=-DUSE_MBEDTLS=1
+        LIBS+=mbedtls
 else
-        CPPFLAGS+=-DUSE_GNUTLS=0
         LIBS+=openssl
+        SRTP_CONFIGURE_FLAGS+=--enable-openssl
 endif
 
 USE_NICE ?= 0
@@ -62,6 +70,8 @@ else
         CPPFLAGS+=-DRTC_ENABLE_WEBSOCKET=0
 endif
 
+CPPFLAGS+=-DRTC_EXPORTS
+
 INCLUDES+=$(if $(LIBS),$(shell pkg-config --cflags $(LIBS)),)
 LDLIBS+=$(LOCALLIBS) $(if $(LIBS),$(shell pkg-config --libs $(LIBS)),)
 
@@ -93,6 +103,7 @@ tests: $(NAME).a $(TEST_OBJS)
 clean:
 	-$(RM) include/rtc/*.d *.d
 	-$(RM) src/*.o src/*.d
+	-$(RM) src/impl/*.o src/impl/*.d
 	-$(RM) test/*.o test/*.d
 
 dist-clean: clean
@@ -100,6 +111,7 @@ dist-clean: clean
 	-$(RM) $(NAME).so
 	-$(RM) libusrsctp.a
 	-$(RM) libjuice.a
+	-$(RM) libsrtp2.a
 	-$(RM) tests
 	-$(RM) include/*~
 	-$(RM) src/*~
@@ -111,13 +123,14 @@ dist-clean: clean
 libusrsctp.a:
 	cd $(USRSCTP_DIR) && \
 		./bootstrap && \
-		./configure --enable-static --disable-debug CFLAGS="-fPIC" && \
+		./configure --enable-static --disable-programs --disable-debug \
+			--disable-inet --disable-inet6 CFLAGS="-fPIC" && \
 		make
 	cp $(USRSCTP_DIR)/usrsctplib/.libs/libusrsctp.a .
 
 libsrtp2.a:
 	cd $(SRTP_DIR) && \
-		./configure && \
+		./configure $(SRTP_CONFIGURE_FLAGS) && \
 		make
 	cp $(SRTP_DIR)/libsrtp2.a .
 

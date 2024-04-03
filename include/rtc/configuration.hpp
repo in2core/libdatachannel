@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2019 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #ifndef RTC_ICE_CONFIGURATION_H
@@ -51,16 +41,18 @@ struct RTC_CPP_EXPORT IceServer {
 };
 
 struct RTC_CPP_EXPORT ProxyServer {
-	enum class Type { None = 0, Socks5, Http, Last = Http };
+	enum class Type { Http, Socks5 };
 
-	ProxyServer(Type type_, string hostname_, uint16_t port_, string username_ = "",
-	            string password_ = "");
+	ProxyServer(const string &url);
+
+	ProxyServer(Type type_, string hostname_, uint16_t port_);
+	ProxyServer(Type type_, string hostname_, uint16_t port_, string username_, string password_);
 
 	Type type;
 	string hostname;
 	uint16_t port;
-	string username;
-	string password;
+	optional<string> username;
+	optional<string> password;
 };
 
 enum class CertificateType {
@@ -80,8 +72,10 @@ struct RTC_CPP_EXPORT Configuration {
 	// Options
 	CertificateType certificateType = CertificateType::Default;
 	TransportPolicy iceTransportPolicy = TransportPolicy::All;
-	bool enableIceTcp = false;
+	bool enableIceTcp = false;    // libnice only
+	bool enableIceUdpMux = false; // libjuice only
 	bool disableAutoNegotiation = false;
+	bool forceMediaTransport = false;
 
 	// Port range
 	uint16_t portRangeBegin = 1024;
@@ -93,6 +87,35 @@ struct RTC_CPP_EXPORT Configuration {
 	// Local maximum message size for Data Channels
 	optional<size_t> maxMessageSize;
 };
+
+#ifdef RTC_ENABLE_WEBSOCKET
+
+struct WebSocketConfiguration {
+	bool disableTlsVerification = false; // if true, don't verify the TLS certificate
+	optional<ProxyServer> proxyServer;   // only non-authenticated http supported for now
+	std::vector<string> protocols;
+	optional<std::chrono::milliseconds> connectionTimeout; // zero to disable
+	optional<std::chrono::milliseconds> pingInterval;      // zero to disable
+	optional<int> maxOutstandingPings;
+	optional<string> caCertificatePemFile;
+	optional<string> certificatePemFile;
+	optional<string> keyPemFile;
+	optional<string> keyPemPass;
+	optional<size_t> maxMessageSize;
+};
+
+struct WebSocketServerConfiguration {
+	uint16_t port = 8080;
+	bool enableTls = false;
+	optional<string> certificatePemFile;
+	optional<string> keyPemFile;
+	optional<string> keyPemPass;
+	optional<string> bindAddress;
+	optional<std::chrono::milliseconds> connectionTimeout;
+	optional<size_t> maxMessageSize;
+};
+
+#endif
 
 } // namespace rtc
 

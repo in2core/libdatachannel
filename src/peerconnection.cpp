@@ -2,19 +2,9 @@
  * Copyright (c) 2019 Paul-Louis Ageneau
  * Copyright (c) 2020 Filip Klembara (in2core)
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #include "peerconnection.hpp"
@@ -26,7 +16,6 @@
 #include "impl/icetransport.hpp"
 #include "impl/internals.hpp"
 #include "impl/peerconnection.hpp"
-#include "impl/processor.hpp"
 #include "impl/sctptransport.hpp"
 #include "impl/threadpool.hpp"
 #include "impl/track.hpp"
@@ -50,7 +39,7 @@ PeerConnection::PeerConnection(Configuration config)
 
 PeerConnection::~PeerConnection() {
 	try {
-		close();
+		impl()->remoteClose();
 	} catch (const std::exception &e) {
 		PLOG_ERROR << e.what();
 	}
@@ -61,6 +50,8 @@ void PeerConnection::close() { impl()->close(); }
 const Configuration *PeerConnection::config() const { return &impl()->config; }
 
 PeerConnection::State PeerConnection::state() const { return impl()->state; }
+
+PeerConnection::IceState PeerConnection::iceState() const { return impl()->iceState; }
 
 PeerConnection::GatheringState PeerConnection::gatheringState() const {
 	return impl()->gatheringState;
@@ -77,6 +68,8 @@ optional<Description> PeerConnection::localDescription() const {
 optional<Description> PeerConnection::remoteDescription() const {
 	return impl()->remoteDescription();
 }
+
+size_t PeerConnection::remoteMaxMessageSize() const { return impl()->remoteMaxMessageSize(); }
 
 bool PeerConnection::hasMedia() const {
 	auto local = localDescription();
@@ -229,8 +222,14 @@ void PeerConnection::setRemoteDescription(Description description) {
 	// Candidates will be added at the end, extract them for now
 	auto remoteCandidates = description.extractCandidates();
 	auto type = description.type();
-	impl()->processRemoteDescription(std::move(description));
 
+	auto iceTransport = impl()->initIceTransport();
+	if (!iceTransport)
+		return; // closed
+
+	iceTransport->setRemoteDescription(description); // ICE transport might reject the description
+
+	impl()->processRemoteDescription(std::move(description));
 	impl()->changeSignalingState(newSignalingState);
 	signalingLock.unlock();
 
@@ -250,6 +249,12 @@ void PeerConnection::addRemoteCandidate(Candidate candidate) {
 	impl()->processRemoteCandidate(std::move(candidate));
 }
 
+void PeerConnection::setMediaHandler(shared_ptr<MediaHandler> handler) {
+	impl()->setMediaHandler(std::move(handler));
+};
+
+shared_ptr<MediaHandler> PeerConnection::getMediaHandler() { return impl()->getMediaHandler(); };
+
 optional<string> PeerConnection::localAddress() const {
 	auto iceTransport = impl()->getIceTransport();
 	return iceTransport ? iceTransport->getLocalAddress() : nullopt;
@@ -260,13 +265,11 @@ optional<string> PeerConnection::remoteAddress() const {
 	return iceTransport ? iceTransport->getRemoteAddress() : nullopt;
 }
 
+uint16_t PeerConnection::maxDataChannelId() const { return impl()->maxDataChannelStream(); }
+
 shared_ptr<DataChannel> PeerConnection::createDataChannel(string label, DataChannelInit init) {
 	auto channelImpl = impl()->emplaceDataChannel(std::move(label), std::move(init));
 	auto channel = std::make_shared<DataChannel>(channelImpl);
-
-	if (auto transport = impl()->getSctpTransport())
-		if (transport->state() == impl::SctpTransport::State::Connected)
-			channelImpl->open(transport);
 
 	// Renegotiation is needed iff the current local description does not have application
 	auto local = impl()->localDescription();
@@ -312,6 +315,10 @@ void PeerConnection::onStateChange(std::function<void(State state)> callback) {
 	impl()->stateChangeCallback = callback;
 }
 
+void PeerConnection::onIceStateChange(std::function<void(IceState state)> callback) {
+	impl()->iceStateChangeCallback = callback;
+}
+
 void PeerConnection::onGatheringStateChange(std::function<void(GatheringState state)> callback) {
 	impl()->gatheringStateChangeCallback = callback;
 }
@@ -319,6 +326,8 @@ void PeerConnection::onGatheringStateChange(std::function<void(GatheringState st
 void PeerConnection::onSignalingStateChange(std::function<void(SignalingState state)> callback) {
 	impl()->signalingStateChangeCallback = callback;
 }
+
+void PeerConnection::resetCallbacks() { impl()->resetCallbacks(); }
 
 bool PeerConnection::getSelectedCandidatePair(Candidate *local, Candidate *remote) {
 	auto iceTransport = impl()->getIceTransport();
@@ -345,10 +354,8 @@ optional<std::chrono::milliseconds> PeerConnection::rtt() {
 	return sctpTransport ? sctpTransport->rtt() : nullopt;
 }
 
-} // namespace rtc
-
-std::ostream &operator<<(std::ostream &out, rtc::PeerConnection::State state) {
-	using State = rtc::PeerConnection::State;
+std::ostream &operator<<(std::ostream &out, PeerConnection::State state) {
+	using State = PeerConnection::State;
 	const char *str;
 	switch (state) {
 	case State::New:
@@ -376,8 +383,40 @@ std::ostream &operator<<(std::ostream &out, rtc::PeerConnection::State state) {
 	return out << str;
 }
 
-std::ostream &operator<<(std::ostream &out, rtc::PeerConnection::GatheringState state) {
-	using GatheringState = rtc::PeerConnection::GatheringState;
+std::ostream &operator<<(std::ostream &out, PeerConnection::IceState state) {
+	using IceState = PeerConnection::IceState;
+	const char *str;
+	switch (state) {
+	case IceState::New:
+		str = "new";
+		break;
+	case IceState::Checking:
+		str = "checking";
+		break;
+	case IceState::Connected:
+		str = "connected";
+		break;
+	case IceState::Completed:
+		str = "completed";
+		break;
+	case IceState::Failed:
+		str = "failed";
+		break;
+	case IceState::Disconnected:
+		str = "disconnected";
+		break;
+	case IceState::Closed:
+		str = "closed";
+		break;
+	default:
+		str = "unknown";
+		break;
+	}
+	return out << str;
+}
+
+std::ostream &operator<<(std::ostream &out, PeerConnection::GatheringState state) {
+	using GatheringState = PeerConnection::GatheringState;
 	const char *str;
 	switch (state) {
 	case GatheringState::New:
@@ -396,8 +435,8 @@ std::ostream &operator<<(std::ostream &out, rtc::PeerConnection::GatheringState 
 	return out << str;
 }
 
-std::ostream &operator<<(std::ostream &out, rtc::PeerConnection::SignalingState state) {
-	using SignalingState = rtc::PeerConnection::SignalingState;
+std::ostream &operator<<(std::ostream &out, PeerConnection::SignalingState state) {
+	using SignalingState = PeerConnection::SignalingState;
 	const char *str;
 	switch (state) {
 	case SignalingState::Stable:
@@ -421,3 +460,5 @@ std::ostream &operator<<(std::ostream &out, rtc::PeerConnection::SignalingState 
 	}
 	return out << str;
 }
+
+} // namespace rtc

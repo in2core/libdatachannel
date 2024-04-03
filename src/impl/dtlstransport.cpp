@@ -1,29 +1,21 @@
 /**
  * Copyright (c) 2019 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #include "dtlstransport.hpp"
+#include "dtlssrtptransport.hpp"
 #include "icetransport.hpp"
 #include "internals.hpp"
+#include "threadpool.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <exception>
-#include <iostream>
 
 #if !USE_GNUTLS
 #ifdef _WIN32
@@ -37,6 +29,16 @@ using namespace std::chrono;
 
 namespace rtc::impl {
 
+void DtlsTransport::enqueueRecv() {
+	if (mPendingRecvCount > 0)
+		return;
+
+	if (auto shared_this = weak_from_this().lock()) {
+		++mPendingRecvCount;
+		ThreadPool::Instance().enqueue(&DtlsTransport::doRecv, std::move(shared_this));
+	}
+}
+
 #if USE_GNUTLS
 
 void DtlsTransport::Init() {
@@ -46,11 +48,12 @@ void DtlsTransport::Init() {
 void DtlsTransport::Cleanup() { gnutls_global_deinit(); }
 
 DtlsTransport::DtlsTransport(shared_ptr<IceTransport> lower, certificate_ptr certificate,
-                             optional<size_t> mtu, verifier_callback verifierCallback,
-                             state_callback stateChangeCallback)
+                             optional<size_t> mtu,
+                             CertificateFingerprint::Algorithm fingerprintAlgorithm,
+                             verifier_callback verifierCallback, state_callback stateChangeCallback)
     : Transport(lower, std::move(stateChangeCallback)), mMtu(mtu), mCertificate(certificate),
-      mVerifierCallback(std::move(verifierCallback)),
-      mIsClient(lower->role() == Description::Role::Active), mCurrentDscp(0) {
+      mFingerprintAlgorithm(fingerprintAlgorithm), mVerifierCallback(std::move(verifierCallback)),
+      mIsClient(lower->role() == Description::Role::Active) {
 
 	PLOG_DEBUG << "Initializing DTLS transport (GnuTLS)";
 
@@ -60,20 +63,21 @@ DtlsTransport::DtlsTransport(shared_ptr<IceTransport> lower, certificate_ptr cer
 	gnutls_certificate_credentials_t creds = mCertificate->credentials();
 	gnutls_certificate_set_verify_function(creds, CertificateCallback);
 
-	unsigned int flags = GNUTLS_DATAGRAM | (mIsClient ? GNUTLS_CLIENT : GNUTLS_SERVER);
+	unsigned int flags =
+	    GNUTLS_DATAGRAM | GNUTLS_NONBLOCK | (mIsClient ? GNUTLS_CLIENT : GNUTLS_SERVER);
 	gnutls::check(gnutls_init(&mSession, flags));
 
 	try {
 		// RFC 8261: SCTP performs segmentation and reassembly based on the path MTU.
 		// Therefore, the DTLS layer MUST NOT use any compression algorithm.
-		// See https://tools.ietf.org/html/rfc8261#section-5
+		// See https://www.rfc-editor.org/rfc/rfc8261.html#section-5
 		const char *priorities = "SECURE128:-VERS-SSL3.0:-ARCFOUR-128:-COMP-ALL:+COMP-NULL";
 		const char *err_pos = NULL;
 		gnutls::check(gnutls_priority_set_direct(mSession, priorities, &err_pos),
 		              "Failed to set TLS priorities");
 
 		// RFC 8827: The DTLS-SRTP protection profile SRTP_AES128_CM_HMAC_SHA1_80 MUST be supported
-		// See https://tools.ietf.org/html/rfc8827#section-6.5
+		// See https://www.rfc-editor.org/rfc/rfc8827.html#section-6.5
 		gnutls::check(gnutls_srtp_set_profile(mSession, GNUTLS_SRTP_AES128_CM_HMAC_SHA1_80),
 		              "Failed to set SRTP profile");
 
@@ -94,31 +98,36 @@ DtlsTransport::DtlsTransport(shared_ptr<IceTransport> lower, certificate_ptr cer
 		gnutls_deinit(mSession);
 		throw;
 	}
+
+	// Set recommended medium-priority DSCP value for handshake
+	// See https://www.rfc-editor.org/rfc/rfc8837.html#section-5
+	mCurrentDscp = 10; // AF11: Assured Forwarding class 1, low drop probability
 }
 
 DtlsTransport::~DtlsTransport() {
 	stop();
 
+	PLOG_DEBUG << "Destroying DTLS transport";
 	gnutls_deinit(mSession);
 }
 
 void DtlsTransport::start() {
-	Transport::start();
-
+	PLOG_DEBUG << "Starting DTLS transport";
 	registerIncoming();
+	changeState(State::Connecting);
 
-	PLOG_DEBUG << "Starting DTLS recv thread";
-	mRecvThread = std::thread(&DtlsTransport::runRecvLoop, this);
+	size_t mtu = mMtu.value_or(DEFAULT_MTU) - 8 - 40; // UDP/IPv6
+	gnutls_dtls_set_mtu(mSession, static_cast<unsigned int>(mtu));
+	PLOG_VERBOSE << "DTLS MTU set to " << mtu;
+
+	enqueueRecv(); // to initiate the handshake
 }
 
-bool DtlsTransport::stop() {
-	if (!Transport::stop())
-		return false;
-
-	PLOG_DEBUG << "Stopping DTLS recv thread";
+void DtlsTransport::stop() {
+	PLOG_DEBUG << "Stopping DTLS transport";
+	unregisterIncoming();
 	mIncomingQueue.stop();
-	mRecvThread.join();
-	return true;
+	enqueueRecv();
 }
 
 bool DtlsTransport::send(message_ptr message) {
@@ -137,7 +146,10 @@ bool DtlsTransport::send(message_ptr message) {
 	if (ret == GNUTLS_E_LARGE_PACKET)
 		return false;
 
-	return gnutls::check(ret);
+	if (!gnutls::check(ret))
+		return false;
+
+	return mOutgoingResult;
 }
 
 void DtlsTransport::incoming(message_ptr message) {
@@ -148,101 +160,119 @@ void DtlsTransport::incoming(message_ptr message) {
 
 	PLOG_VERBOSE << "Incoming size=" << message->size();
 	mIncomingQueue.push(message);
+	enqueueRecv();
 }
 
 bool DtlsTransport::outgoing(message_ptr message) {
-	if (message->dscp == 0)
-		message->dscp = mCurrentDscp;
+	message->dscp = mCurrentDscp;
 
-	return Transport::outgoing(std::move(message));
+	bool result = Transport::outgoing(std::move(message));
+	mOutgoingResult = result;
+	return result;
+}
+
+bool DtlsTransport::demuxMessage(message_ptr) {
+	// Dummy
+	return false;
 }
 
 void DtlsTransport::postHandshake() {
 	// Dummy
 }
 
-void DtlsTransport::runRecvLoop() {
-	const size_t bufferSize = 4096;
+void DtlsTransport::doRecv() {
+	std::lock_guard lock(mRecvMutex);
+	--mPendingRecvCount;
 
-	// Handshake loop
-	try {
-		changeState(State::Connecting);
-
-		size_t mtu = mMtu.value_or(DEFAULT_MTU) - 8 - 40; // UDP/IPv6
-		gnutls_dtls_set_mtu(mSession, static_cast<unsigned int>(mtu));
-		PLOG_VERBOSE << "SSL MTU set to " << mtu;
-
-		int ret;
-		do {
-			ret = gnutls_handshake(mSession);
-
-			if (ret == GNUTLS_E_LARGE_PACKET)
-				throw std::runtime_error("MTU is too low");
-
-		} while (ret == GNUTLS_E_INTERRUPTED || ret == GNUTLS_E_AGAIN ||
-		         !gnutls::check(ret, "DTLS handshake failed"));
-
-		// RFC 8261: DTLS MUST support sending messages larger than the current path MTU
-		// See https://tools.ietf.org/html/rfc8261#section-5
-		gnutls_dtls_set_mtu(mSession, bufferSize + 1);
-
-	} catch (const std::exception &e) {
-		PLOG_ERROR << "DTLS handshake: " << e.what();
-		changeState(State::Failed);
+	if (state() != State::Connecting && state() != State::Connected)
 		return;
-	}
 
-	// Receive loop
 	try {
-		PLOG_INFO << "DTLS handshake finished";
-		postHandshake();
-		changeState(State::Connected);
-
+		const size_t bufferSize = 4096;
 		char buffer[bufferSize];
 
-		while (true) {
-			ssize_t ret;
+		// Handle handshake if connecting
+		if (state() == State::Connecting) {
+			int ret;
 			do {
-				ret = gnutls_record_recv(mSession, buffer, bufferSize);
-			} while (ret == GNUTLS_E_INTERRUPTED || ret == GNUTLS_E_AGAIN);
+				ret = gnutls_handshake(mSession);
 
-			// RFC 8827: Implementations MUST NOT implement DTLS renegotiation and MUST reject it
-			// with a "no_renegotiation" alert if offered.
-			// See https://tools.ietf.org/html/rfc8827#section-6.5
-			if (ret == GNUTLS_E_REHANDSHAKE) {
-				do {
-					std::lock_guard lock(mSendMutex);
-					ret = gnutls_alert_send(mSession, GNUTLS_AL_WARNING, GNUTLS_A_NO_RENEGOTIATION);
-				} while (ret == GNUTLS_E_INTERRUPTED || ret == GNUTLS_E_AGAIN);
-				continue;
-			}
-
-			// Consider premature termination as remote closing
-			if (ret == GNUTLS_E_PREMATURE_TERMINATION) {
-				PLOG_DEBUG << "DTLS connection terminated";
-				break;
-			}
-
-			if (gnutls::check(ret)) {
-				if (ret == 0) {
-					// Closed
-					PLOG_DEBUG << "DTLS connection cleanly closed";
-					break;
+				if (ret == GNUTLS_E_AGAIN) {
+					// Schedule next call on timeout and return
+					auto timeout = milliseconds(gnutls_dtls_get_timeout(mSession));
+					ThreadPool::Instance().schedule(timeout, [weak_this = weak_from_this()]() {
+						if (auto locked = weak_this.lock())
+							locked->doRecv();
+					});
+					return;
 				}
-				auto *b = reinterpret_cast<byte *>(buffer);
-				recv(make_message(b, b + ret));
-			}
+
+				if (ret == GNUTLS_E_LARGE_PACKET) {
+					throw std::runtime_error("MTU is too low");
+				}
+
+			} while (!gnutls::check(ret, "Handshake failed")); // Re-call on non-fatal error
+
+			// RFC 8261: DTLS MUST support sending messages larger than the current path MTU
+			// See https://www.rfc-editor.org/rfc/rfc8261.html#section-5
+			gnutls_dtls_set_mtu(mSession, bufferSize + 1);
+
+			PLOG_INFO << "DTLS handshake finished";
+			changeState(State::Connected);
+			postHandshake();
 		}
 
+		if (state() == State::Connected) {
+			while (true) {
+				ssize_t ret = gnutls_record_recv(mSession, buffer, bufferSize);
+
+				if (ret == GNUTLS_E_AGAIN) {
+					return;
+				}
+
+				// RFC 8827: Implementations MUST NOT implement DTLS renegotiation and MUST reject
+				// it with a "no_renegotiation" alert if offered. See
+				// https://www.rfc-editor.org/rfc/rfc8827.html#section-6.5
+				if (ret == GNUTLS_E_REHANDSHAKE) {
+					do {
+						std::lock_guard lock(mSendMutex);
+						ret = gnutls_alert_send(mSession, GNUTLS_AL_WARNING,
+						                        GNUTLS_A_NO_RENEGOTIATION);
+					} while (ret == GNUTLS_E_INTERRUPTED || ret == GNUTLS_E_AGAIN);
+					continue;
+				}
+
+				// Consider premature termination as remote closing
+				if (ret == GNUTLS_E_PREMATURE_TERMINATION) {
+					PLOG_DEBUG << "DTLS connection terminated";
+					break;
+				}
+
+				if (gnutls::check(ret)) {
+					if (ret == 0) {
+						// Closed
+						PLOG_DEBUG << "DTLS connection cleanly closed";
+						break;
+					}
+					auto *b = reinterpret_cast<byte *>(buffer);
+					recv(make_message(b, b + ret));
+				}
+			}
+		}
 	} catch (const std::exception &e) {
 		PLOG_ERROR << "DTLS recv: " << e.what();
 	}
 
-	gnutls_bye(mSession, GNUTLS_SHUT_RDWR);
+	gnutls_bye(mSession, GNUTLS_SHUT_WR);
 
-	PLOG_INFO << "DTLS closed";
-	changeState(State::Disconnected);
-	recv(nullptr);
+	if (state() == State::Connected) {
+		PLOG_INFO << "DTLS closed";
+		changeState(State::Disconnected);
+		recv(nullptr);
+	} else {
+		PLOG_ERROR << "DTLS handshake failed";
+		changeState(State::Failed);
+	}
 }
 
 int DtlsTransport::CertificateCallback(gnutls_session_t session) {
@@ -266,7 +296,7 @@ int DtlsTransport::CertificateCallback(gnutls_session_t session) {
 			return GNUTLS_E_CERTIFICATE_ERROR;
 		}
 
-		string fingerprint = make_fingerprint(crt);
+		string fingerprint = make_fingerprint(crt, t->mFingerprintAlgorithm);
 		gnutls_x509_crt_deinit(crt);
 
 		bool success = t->mVerifierCallback(fingerprint);
@@ -298,8 +328,17 @@ ssize_t DtlsTransport::WriteCallback(gnutls_transport_ptr_t ptr, const void *dat
 ssize_t DtlsTransport::ReadCallback(gnutls_transport_ptr_t ptr, void *data, size_t maxlen) {
 	DtlsTransport *t = static_cast<DtlsTransport *>(ptr);
 	try {
-		if (auto next = t->mIncomingQueue.pop()) {
+		while (t->mIncomingQueue.running()) {
+			auto next = t->mIncomingQueue.pop();
+			if (!next) {
+				gnutls_transport_set_errno(t->mSession, EAGAIN);
+				return -1;
+			}
+
 			message_ptr message = std::move(*next);
+			if (t->demuxMessage(message))
+				continue;
+
 			ssize_t len = std::min(maxlen, message->size());
 			std::memcpy(data, message->data(), len);
 			gnutls_transport_set_errno(t->mSession, 0);
@@ -317,12 +356,10 @@ ssize_t DtlsTransport::ReadCallback(gnutls_transport_ptr_t ptr, void *data, size
 	}
 }
 
-int DtlsTransport::TimeoutCallback(gnutls_transport_ptr_t ptr, unsigned int ms) {
+int DtlsTransport::TimeoutCallback(gnutls_transport_ptr_t ptr, unsigned int /* ms */) {
 	DtlsTransport *t = static_cast<DtlsTransport *>(ptr);
 	try {
-		bool isReadable = t->mIncomingQueue.wait(
-		    ms != GNUTLS_INDEFINITE_TIMEOUT ? std::make_optional(milliseconds(ms)) : nullopt);
-		return isReadable ? 1 : 0;
+		return !t->mIncomingQueue.empty() ? 1 : 0;
 
 	} catch (const std::exception &e) {
 		PLOG_WARNING << e.what();
@@ -330,7 +367,334 @@ int DtlsTransport::TimeoutCallback(gnutls_transport_ptr_t ptr, unsigned int ms) 
 	}
 }
 
-#else // USE_GNUTLS==0
+#elif USE_MBEDTLS
+
+const mbedtls_ssl_srtp_profile srtpSupportedProtectionProfiles[] = {
+    MBEDTLS_TLS_SRTP_AES128_CM_HMAC_SHA1_80,
+    MBEDTLS_TLS_SRTP_UNSET,
+};
+
+DtlsTransport::DtlsTransport(shared_ptr<IceTransport> lower, certificate_ptr certificate,
+                             optional<size_t> mtu,
+                             CertificateFingerprint::Algorithm fingerprintAlgorithm,
+                             verifier_callback verifierCallback, state_callback stateChangeCallback)
+    : Transport(lower, std::move(stateChangeCallback)), mMtu(mtu), mCertificate(certificate),
+      mFingerprintAlgorithm(fingerprintAlgorithm), mVerifierCallback(std::move(verifierCallback)),
+      mIsClient(lower->role() == Description::Role::Active) {
+
+	PLOG_DEBUG << "Initializing DTLS transport (MbedTLS)";
+
+	if (!mCertificate)
+		throw std::invalid_argument("DTLS certificate is null");
+
+	mbedtls_entropy_init(&mEntropy);
+	mbedtls_ctr_drbg_init(&mDrbg);
+	mbedtls_ssl_init(&mSsl);
+	mbedtls_ssl_config_init(&mConf);
+	mbedtls_ctr_drbg_set_prediction_resistance(&mDrbg, MBEDTLS_CTR_DRBG_PR_ON);
+
+	try {
+		mbedtls::check(mbedtls_ctr_drbg_seed(&mDrbg, mbedtls_entropy_func, &mEntropy, NULL, 0));
+
+		mbedtls::check(mbedtls_ssl_config_defaults(
+		                   &mConf, mIsClient ? MBEDTLS_SSL_IS_CLIENT : MBEDTLS_SSL_IS_SERVER,
+		                   MBEDTLS_SSL_TRANSPORT_DATAGRAM, MBEDTLS_SSL_PRESET_DEFAULT));
+
+		mbedtls_ssl_conf_max_version(&mConf, MBEDTLS_SSL_MAJOR_VERSION_3, MBEDTLS_SSL_MINOR_VERSION_3); // TLS 1.2
+		mbedtls_ssl_conf_authmode(&mConf, MBEDTLS_SSL_VERIFY_OPTIONAL);
+		mbedtls_ssl_conf_verify(&mConf, DtlsTransport::CertificateCallback, this);
+		mbedtls_ssl_conf_rng(&mConf, mbedtls_ctr_drbg_random, &mDrbg);
+
+		auto [crt, pk] = mCertificate->credentials();
+		mbedtls::check(mbedtls_ssl_conf_own_cert(&mConf, crt.get(), pk.get()));
+
+		mbedtls_ssl_conf_dtls_cookies(&mConf, NULL, NULL, NULL);
+		mbedtls_ssl_conf_dtls_srtp_protection_profiles(&mConf, srtpSupportedProtectionProfiles);
+
+		mbedtls::check(mbedtls_ssl_setup(&mSsl, &mConf));
+
+		mbedtls_ssl_set_export_keys_cb(&mSsl, DtlsTransport::ExportKeysCallback, this);
+		mbedtls_ssl_set_bio(&mSsl, this, WriteCallback, ReadCallback, NULL);
+		mbedtls_ssl_set_timer_cb(&mSsl, this, SetTimerCallback, GetTimerCallback);
+
+	} catch (...) {
+		mbedtls_entropy_free(&mEntropy);
+		mbedtls_ctr_drbg_free(&mDrbg);
+		mbedtls_ssl_free(&mSsl);
+		mbedtls_ssl_config_free(&mConf);
+		throw;
+	}
+
+	// Set recommended medium-priority DSCP value for handshake
+	// See https://www.rfc-editor.org/rfc/rfc8837.html#section-5
+	mCurrentDscp = 10; // AF11: Assured Forwarding class 1, low drop probability
+}
+
+DtlsTransport::~DtlsTransport() {
+	stop();
+
+	PLOG_DEBUG << "Destroying DTLS transport";
+	mbedtls_entropy_free(&mEntropy);
+	mbedtls_ctr_drbg_free(&mDrbg);
+	mbedtls_ssl_free(&mSsl);
+	mbedtls_ssl_config_free(&mConf);
+}
+
+void DtlsTransport::Init() {
+	// Nothing to do
+}
+
+void DtlsTransport::Cleanup() {
+	// Nothing to do
+}
+
+void DtlsTransport::start() {
+	PLOG_DEBUG << "Starting DTLS transport";
+	registerIncoming();
+	changeState(State::Connecting);
+
+	{
+		std::lock_guard lock(mSslMutex);
+		size_t mtu = mMtu.value_or(DEFAULT_MTU) - 8 - 40; // UDP/IPv6
+		mbedtls_ssl_set_mtu(&mSsl, static_cast<unsigned int>(mtu));
+		PLOG_VERBOSE << "DTLS MTU set to " << mtu;
+	}
+
+	enqueueRecv(); // to initiate the handshake
+}
+
+void DtlsTransport::stop() {
+	PLOG_DEBUG << "Stopping DTLS transport";
+	unregisterIncoming();
+	mIncomingQueue.stop();
+	enqueueRecv();
+}
+
+bool DtlsTransport::send(message_ptr message) {
+	if (!message || state() != State::Connected)
+		return false;
+
+	PLOG_VERBOSE << "Send size=" << message->size();
+
+	int ret;
+	do {
+		std::lock_guard lock(mSslMutex);
+		if (message->size() > size_t(mbedtls_ssl_get_max_out_record_payload(&mSsl)))
+			return false;
+
+		mCurrentDscp = message->dscp;
+		ret = mbedtls_ssl_write(&mSsl, reinterpret_cast<const unsigned char *>(message->data()),
+		                        message->size());
+	} while (!mbedtls::check(ret));
+
+	return mOutgoingResult;
+}
+
+void DtlsTransport::incoming(message_ptr message) {
+	if (!message) {
+		mIncomingQueue.stop();
+		return;
+	}
+
+	PLOG_VERBOSE << "Incoming size=" << message->size();
+	mIncomingQueue.push(message);
+	enqueueRecv();
+}
+
+bool DtlsTransport::outgoing(message_ptr message) {
+	message->dscp = mCurrentDscp;
+
+	bool result = Transport::outgoing(std::move(message));
+	mOutgoingResult = result;
+	return result;
+}
+
+bool DtlsTransport::demuxMessage(message_ptr) {
+	// Dummy
+	return false;
+}
+
+void DtlsTransport::postHandshake() {
+	// Dummy
+}
+
+void DtlsTransport::doRecv() {
+	std::lock_guard lock(mRecvMutex);
+	--mPendingRecvCount;
+
+	if (state() != State::Connecting && state() != State::Connected)
+		return;
+
+	try {
+		const size_t bufferSize = 4096;
+		char buffer[bufferSize];
+
+		// Handle handshake if connecting
+		if (state() == State::Connecting) {
+			while (true) {
+				int ret;
+				{
+					std::lock_guard lock(mSslMutex);
+					ret = mbedtls_ssl_handshake(&mSsl);
+				}
+
+				if (ret == MBEDTLS_ERR_SSL_WANT_READ) {
+					ThreadPool::Instance().schedule(mTimerSetAt + milliseconds(mFinMs),
+					                                [weak_this = weak_from_this()]() {
+						                                if (auto locked = weak_this.lock())
+							                                locked->doRecv();
+					                                });
+					return;
+				}
+
+				if (mbedtls::check(ret, "Handshake failed")) {
+					// RFC 8261: DTLS MUST support sending messages larger than the current path MTU
+					// See https://www.rfc-editor.org/rfc/rfc8261.html#section-5
+					{
+						std::lock_guard lock(mSslMutex);
+						mbedtls_ssl_set_mtu(&mSsl, static_cast<unsigned int>(bufferSize + 1));
+					}
+
+					PLOG_INFO << "DTLS handshake finished";
+					changeState(State::Connected);
+					postHandshake();
+					break;
+				}
+			}
+		}
+
+		if (state() == State::Connected) {
+			while (true) {
+				int ret;
+				{
+					std::lock_guard lock(mSslMutex);
+					ret = mbedtls_ssl_read(&mSsl, reinterpret_cast<unsigned char *>(buffer),
+					                       bufferSize);
+				}
+
+				if (ret == MBEDTLS_ERR_SSL_WANT_READ) {
+					return;
+				}
+
+				if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
+					PLOG_DEBUG << "DTLS connection cleanly closed";
+					break;
+				}
+
+				if (mbedtls::check(ret)) {
+					if (ret == 0) {
+						PLOG_DEBUG << "DTLS connection terminated";
+						break;
+					}
+					auto *b = reinterpret_cast<byte *>(buffer);
+					recv(make_message(b, b + ret));
+				}
+			}
+		}
+	} catch (const std::exception &e) {
+		PLOG_ERROR << "DTLS recv: " << e.what();
+	}
+
+	if (state() == State::Connected) {
+		PLOG_INFO << "DTLS closed";
+		changeState(State::Disconnected);
+		recv(nullptr);
+	} else {
+		PLOG_ERROR << "DTLS handshake failed";
+		changeState(State::Failed);
+	}
+}
+
+int DtlsTransport::CertificateCallback(void *ctx, mbedtls_x509_crt *crt, int /*depth*/,
+                                       uint32_t * /*flags*/) {
+	auto this_ = static_cast<DtlsTransport *>(ctx);
+	string fingerprint = make_fingerprint(crt, this_->mFingerprintAlgorithm);
+	std::transform(fingerprint.begin(), fingerprint.end(), fingerprint.begin(),
+	               [](char c) { return char(std::toupper(c)); });
+	return this_->mVerifierCallback(fingerprint) ? 0 : 1;
+}
+
+void DtlsTransport::ExportKeysCallback(void *ctx, mbedtls_ssl_key_export_type /*type*/,
+                                       const unsigned char *secret, size_t secret_len,
+                                       const unsigned char client_random[32],
+                                       const unsigned char server_random[32],
+                                       mbedtls_tls_prf_types tls_prf_type) {
+	auto dtlsTransport = static_cast<DtlsTransport *>(ctx);
+	std::memcpy(dtlsTransport->mMasterSecret, secret, secret_len);
+	std::memcpy(dtlsTransport->mRandBytes, client_random, 32);
+	std::memcpy(dtlsTransport->mRandBytes + 32, server_random, 32);
+	dtlsTransport->mTlsProfile = tls_prf_type;
+}
+
+int DtlsTransport::WriteCallback(void *ctx, const unsigned char *buf, size_t len) {
+	auto *t = static_cast<DtlsTransport *>(ctx);
+	try {
+		if (len > 0) {
+			auto b = reinterpret_cast<const byte *>(buf);
+			t->outgoing(make_message(b, b + len));
+		}
+		return int(len);
+
+	} catch (const std::exception &e) {
+		PLOG_WARNING << e.what();
+		return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+	}
+}
+
+int DtlsTransport::ReadCallback(void *ctx, unsigned char *buf, size_t len) {
+	auto *t = static_cast<DtlsTransport *>(ctx);
+	try {
+		while (t->mIncomingQueue.running()) {
+			auto next = t->mIncomingQueue.pop();
+			if (!next) {
+				return MBEDTLS_ERR_SSL_WANT_READ;
+			}
+
+			message_ptr message = std::move(*next);
+			if (t->demuxMessage(message))
+				continue;
+
+			auto bufMin = std::min(len, size_t(message->size()));
+			std::memcpy(buf, message->data(), bufMin);
+			return int(len);
+		}
+
+		// Closed
+		return 0;
+
+	} catch (const std::exception &e) {
+		PLOG_WARNING << e.what();
+		return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+		;
+	}
+}
+
+void DtlsTransport::SetTimerCallback(void *ctx, uint32_t int_ms, uint32_t fin_ms) {
+	auto dtlsTransport = static_cast<DtlsTransport *>(ctx);
+	dtlsTransport->mIntMs = int_ms;
+	dtlsTransport->mFinMs = fin_ms;
+
+	if (fin_ms != 0) {
+		dtlsTransport->mTimerSetAt = std::chrono::steady_clock::now();
+	}
+}
+
+int DtlsTransport::GetTimerCallback(void *ctx) {
+	auto dtlsTransport = static_cast<DtlsTransport *>(ctx);
+	auto now = std::chrono::steady_clock::now();
+
+	if (dtlsTransport->mFinMs == 0) {
+		return -1;
+	} else if (now >= dtlsTransport->mTimerSetAt + milliseconds(dtlsTransport->mFinMs)) {
+		return 2;
+	} else if (now >= dtlsTransport->mTimerSetAt + milliseconds(dtlsTransport->mIntMs)) {
+		return 1;
+	} else {
+		return 0;
+	}
+}
+
+#else // OPENSSL
 
 BIO_METHOD *DtlsTransport::BioMethods = NULL;
 int DtlsTransport::TransportExIndex = -1;
@@ -360,11 +724,12 @@ void DtlsTransport::Cleanup() {
 }
 
 DtlsTransport::DtlsTransport(shared_ptr<IceTransport> lower, certificate_ptr certificate,
-                             optional<size_t> mtu, verifier_callback verifierCallback,
-                             state_callback stateChangeCallback)
+                             optional<size_t> mtu,
+                             CertificateFingerprint::Algorithm fingerprintAlgorithm,
+                             verifier_callback verifierCallback, state_callback stateChangeCallback)
     : Transport(lower, std::move(stateChangeCallback)), mMtu(mtu), mCertificate(certificate),
-      mVerifierCallback(std::move(verifierCallback)),
-      mIsClient(lower->role() == Description::Role::Active), mCurrentDscp(0) {
+      mFingerprintAlgorithm(fingerprintAlgorithm), mVerifierCallback(std::move(verifierCallback)),
+      mIsClient(lower->role() == Description::Role::Active) {
 	PLOG_DEBUG << "Initializing DTLS transport (OpenSSL)";
 
 	if (!mCertificate)
@@ -377,15 +742,15 @@ DtlsTransport::DtlsTransport(shared_ptr<IceTransport> lower, certificate_ptr cer
 
 		// RFC 8261: SCTP performs segmentation and reassembly based on the path MTU.
 		// Therefore, the DTLS layer MUST NOT use any compression algorithm.
-		// See https://tools.ietf.org/html/rfc8261#section-5
+		// See https://www.rfc-editor.org/rfc/rfc8261.html#section-5
 		// RFC 8827: Implementations MUST NOT implement DTLS renegotiation
-		// See https://tools.ietf.org/html/rfc8827#section-6.5
+		// See https://www.rfc-editor.org/rfc/rfc8827.html#section-6.5
 		SSL_CTX_set_options(mCtx, SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION | SSL_OP_NO_QUERY_MTU |
 		                              SSL_OP_NO_RENEGOTIATION);
 
 		SSL_CTX_set_min_proto_version(mCtx, DTLS1_VERSION);
 		SSL_CTX_set_read_ahead(mCtx, 1);
-		SSL_CTX_set_quiet_shutdown(mCtx, 1);
+		SSL_CTX_set_quiet_shutdown(mCtx, 0); // send the close_notify alert
 		SSL_CTX_set_info_callback(mCtx, InfoCallback);
 
 		SSL_CTX_set_verify(mCtx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
@@ -395,10 +760,17 @@ DtlsTransport::DtlsTransport(shared_ptr<IceTransport> lower, certificate_ptr cer
 		openssl::check(SSL_CTX_set_cipher_list(mCtx, "ALL:!LOW:!EXP:!RC4:!MD5:@STRENGTH"),
 		               "Failed to set SSL priorities");
 
+#if OPENSSL_VERSION_NUMBER >= 0x30000000
+		openssl::check(SSL_CTX_set1_groups_list(mCtx, "P-256"), "Failed to set SSL groups");
+#else
+		auto ecdh = unique_ptr<EC_KEY, decltype(&EC_KEY_free)>(
+		    EC_KEY_new_by_curve_name(NID_X9_62_prime256v1), EC_KEY_free);
+		SSL_CTX_set_tmp_ecdh(mCtx, ecdh.get());
+#endif
+
 		auto [x509, pkey] = mCertificate->credentials();
 		SSL_CTX_use_certificate(mCtx, x509);
 		SSL_CTX_use_PrivateKey(mCtx, pkey);
-
 		openssl::check(SSL_CTX_check_private_key(mCtx), "SSL local private key check failed");
 
 		mSsl = SSL_new(mCtx);
@@ -421,18 +793,24 @@ DtlsTransport::DtlsTransport(shared_ptr<IceTransport> lower, certificate_ptr cer
 		BIO_set_data(mOutBio, this);
 		SSL_set_bio(mSsl, mInBio, mOutBio);
 
-		auto ecdh = unique_ptr<EC_KEY, decltype(&EC_KEY_free)>(
-		    EC_KEY_new_by_curve_name(NID_X9_62_prime256v1), EC_KEY_free);
-		SSL_set_options(mSsl, SSL_OP_SINGLE_ECDH_USE);
-		SSL_set_tmp_ecdh(mSsl, ecdh.get());
-
 		// RFC 8827: The DTLS-SRTP protection profile SRTP_AES128_CM_HMAC_SHA1_80 MUST be supported
-		// See https://tools.ietf.org/html/rfc8827#section-6.5 Warning:
-		// SSL_set_tlsext_use_srtp() returns 0 on success and 1 on error
+		// See https://www.rfc-editor.org/rfc/rfc8827.html#section-6.5
+		// Warning: SSL_set_tlsext_use_srtp() returns 0 on success and 1 on error
+#if RTC_ENABLE_MEDIA
+		// Try to use GCM suite
+		if (!DtlsSrtpTransport::IsGcmSupported() ||
+		    SSL_set_tlsext_use_srtp(
+		        mSsl, "SRTP_AEAD_AES_256_GCM:SRTP_AEAD_AES_128_GCM:SRTP_AES128_CM_SHA1_80")) {
+			PLOG_WARNING << "AES-GCM for SRTP is not supported, falling back to default profile";
+			if (SSL_set_tlsext_use_srtp(mSsl, "SRTP_AES128_CM_SHA1_80"))
+				throw std::runtime_error("Failed to set SRTP profile: " +
+				                         openssl::error_string(ERR_get_error()));
+		}
+#else
 		if (SSL_set_tlsext_use_srtp(mSsl, "SRTP_AES128_CM_SHA1_80"))
 			throw std::runtime_error("Failed to set SRTP profile: " +
 			                         openssl::error_string(ERR_get_error()));
-
+#endif
 	} catch (...) {
 		if (mSsl)
 			SSL_free(mSsl);
@@ -440,33 +818,48 @@ DtlsTransport::DtlsTransport(shared_ptr<IceTransport> lower, certificate_ptr cer
 			SSL_CTX_free(mCtx);
 		throw;
 	}
+
+	// Set recommended medium-priority DSCP value for handshake
+	// See https://www.rfc-editor.org/rfc/rfc8837.html#section-5
+	mCurrentDscp = 10; // AF11: Assured Forwarding class 1, low drop probability
 }
 
 DtlsTransport::~DtlsTransport() {
 	stop();
 
+	PLOG_DEBUG << "Destroying DTLS transport";
 	SSL_free(mSsl);
 	SSL_CTX_free(mCtx);
 }
 
 void DtlsTransport::start() {
-	Transport::start();
-
+	PLOG_DEBUG << "Starting DTLS transport";
 	registerIncoming();
+	changeState(State::Connecting);
 
-	PLOG_DEBUG << "Starting DTLS recv thread";
-	mRecvThread = std::thread(&DtlsTransport::runRecvLoop, this);
+	int ret, err;
+	{
+		std::lock_guard lock(mSslMutex);
+
+		size_t mtu = mMtu.value_or(DEFAULT_MTU) - 8 - 40; // UDP/IPv6
+		SSL_set_mtu(mSsl, static_cast<unsigned int>(mtu));
+		PLOG_VERBOSE << "DTLS MTU set to " << mtu;
+
+		// Initiate the handshake
+		ret = SSL_do_handshake(mSsl);
+		err = SSL_get_error(mSsl, ret);
+	}
+
+	openssl::check_error(err, "Handshake failed");
+
+	handleTimeout();
 }
 
-bool DtlsTransport::stop() {
-	if (!Transport::stop())
-		return false;
-
-	PLOG_DEBUG << "Stopping DTLS recv thread";
+void DtlsTransport::stop() {
+	PLOG_DEBUG << "Stopping DTLS transport";
+	unregisterIncoming();
 	mIncomingQueue.stop();
-	mRecvThread.join();
-	SSL_shutdown(mSsl);
-	return true;
+	enqueueRecv();
 }
 
 bool DtlsTransport::send(message_ptr message) {
@@ -475,112 +868,121 @@ bool DtlsTransport::send(message_ptr message) {
 
 	PLOG_VERBOSE << "Send size=" << message->size();
 
-	mCurrentDscp = message->dscp;
-	int ret = SSL_write(mSsl, message->data(), int(message->size()));
-	return openssl::check(mSsl, ret);
+	int ret, err;
+	{
+		std::lock_guard lock(mSslMutex);
+		mCurrentDscp = message->dscp;
+		ret = SSL_write(mSsl, message->data(), int(message->size()));
+		err = SSL_get_error(mSsl, ret);
+	}
+
+	if (!openssl::check_error(err))
+		return false;
+
+	return mOutgoingResult;
 }
 
 void DtlsTransport::incoming(message_ptr message) {
 	if (!message) {
 		mIncomingQueue.stop();
+		enqueueRecv();
 		return;
 	}
 
 	PLOG_VERBOSE << "Incoming size=" << message->size();
 	mIncomingQueue.push(message);
+	enqueueRecv();
 }
 
 bool DtlsTransport::outgoing(message_ptr message) {
-	if (message->dscp == 0) {
-		// DTLS handshake packet
-		if (state() != DtlsTransport::State::Connected) {
-			// Set recommended high-priority DSCP value
-			// See https://datatracker.ietf.org/doc/html/rfc8837#section-5
-			message->dscp = 18; // AF21(18), Assured Forwarding class 2, low drop probability
-		} else {
-			message->dscp = mCurrentDscp;
-		}
-	}
-	return Transport::outgoing(std::move(message));
+	message->dscp = mCurrentDscp;
+
+	bool result = Transport::outgoing(std::move(message));
+	mOutgoingResult = result;
+	return result;
+}
+
+bool DtlsTransport::demuxMessage(message_ptr) {
+	// Dummy
+	return false;
 }
 
 void DtlsTransport::postHandshake() {
 	// Dummy
 }
 
-void DtlsTransport::runRecvLoop() {
-	const size_t bufferSize = 4096;
+void DtlsTransport::doRecv() {
+	std::lock_guard lock(mRecvMutex);
+	--mPendingRecvCount;
+
+	if (state() != State::Connecting && state() != State::Connected)
+		return;
+
 	try {
-		changeState(State::Connecting);
-
-		size_t mtu = mMtu.value_or(DEFAULT_MTU) - 8 - 40; // UDP/IPv6
-		SSL_set_mtu(mSsl, static_cast<unsigned int>(mtu));
-		PLOG_VERBOSE << "SSL MTU set to " << mtu;
-
-		// Initiate the handshake
-		int ret = SSL_do_handshake(mSsl);
-		openssl::check(mSsl, ret, "Handshake failed");
-
+		const size_t bufferSize = 4096;
 		byte buffer[bufferSize];
+
+		// Process pending messages
 		while (mIncomingQueue.running()) {
-			// Process pending messages
-			while (auto next = mIncomingQueue.tryPop()) {
-				message_ptr message = std::move(*next);
-				BIO_write(mInBio, message->data(), int(message->size()));
+			auto next = mIncomingQueue.pop();
+			if (!next) {
+				// No more messages pending, handle timeout if connecting
+				if (state() == State::Connecting)
+					handleTimeout();
 
-				if (state() == State::Connecting) {
-					// Continue the handshake
-					ret = SSL_do_handshake(mSsl);
-					if (!openssl::check(mSsl, ret, "Handshake failed"))
-						break;
-
-					if (SSL_is_init_finished(mSsl)) {
-						// RFC 8261: DTLS MUST support sending messages larger than the current path
-						// MTU See https://tools.ietf.org/html/rfc8261#section-5
-						SSL_set_mtu(mSsl, bufferSize + 1);
-
-						PLOG_INFO << "DTLS handshake finished";
-						postHandshake();
-						changeState(State::Connected);
-					}
-				} else {
-					ret = SSL_read(mSsl, buffer, bufferSize);
-					if (!openssl::check(mSsl, ret))
-						break;
-
-					if (ret > 0)
-						recv(make_message(buffer, buffer + ret));
-				}
+				return;
 			}
 
-			// No more messages pending, retransmit and rearm timeout if connecting
-			optional<milliseconds> duration;
+			message_ptr message = std::move(*next);
+			if (demuxMessage(message))
+				continue;
+
+			BIO_write(mInBio, message->data(), int(message->size()));
+
 			if (state() == State::Connecting) {
-				// Warning: This function breaks the usual return value convention
-				ret = DTLSv1_handle_timeout(mSsl);
-				if (ret < 0) {
-					throw std::runtime_error("Handshake timeout"); // write BIO can't fail
-				} else if (ret > 0) {
-					LOG_VERBOSE << "OpenSSL did DTLS retransmit";
+				// Continue the handshake
+				int ret, err;
+				{
+					std::lock_guard lock(mSslMutex);
+					ret = SSL_do_handshake(mSsl);
+					err = SSL_get_error(mSsl, ret);
 				}
 
-				struct timeval timeout = {};
-				if (state() == State::Connecting && DTLSv1_get_timeout(mSsl, &timeout)) {
-					duration = milliseconds(timeout.tv_sec * 1000 + timeout.tv_usec / 1000);
-					// Also handle handshake timeout manually because OpenSSL actually doesn't...
-					// OpenSSL backs off exponentially in base 2 starting from the recommended 1s
-					// so this allows for 5 retransmissions and fails after roughly 30s.
-					if (duration > 30s) {
-						throw std::runtime_error("Handshake timeout");
-					} else {
-						LOG_VERBOSE << "OpenSSL DTLS retransmit timeout is " << duration->count()
-						            << "ms";
+				if (openssl::check_error(err, "Handshake failed")) {
+					// RFC 8261: DTLS MUST support sending messages larger than the current path MTU
+					// See https://www.rfc-editor.org/rfc/rfc8261.html#section-5
+					{
+						std::lock_guard lock(mSslMutex);
+						SSL_set_mtu(mSsl, bufferSize + 1);
 					}
+
+					PLOG_INFO << "DTLS handshake finished";
+					postHandshake();
+					changeState(State::Connected);
 				}
 			}
 
-			mIncomingQueue.wait(duration);
+			if (state() == State::Connected) {
+				int ret, err;
+				{
+					std::lock_guard lock(mSslMutex);
+					ret = SSL_read(mSsl, buffer, bufferSize);
+					err = SSL_get_error(mSsl, ret);
+				}
+
+				if (err == SSL_ERROR_ZERO_RETURN) {
+					PLOG_DEBUG << "TLS connection cleanly closed";
+					break;
+				}
+
+				if (openssl::check_error(err))
+					recv(make_message(buffer, buffer + ret));
+			}
 		}
+
+		std::lock_guard lock(mSslMutex);
+		SSL_shutdown(mSsl);
+
 	} catch (const std::exception &e) {
 		PLOG_ERROR << "DTLS recv: " << e.what();
 	}
@@ -595,6 +997,35 @@ void DtlsTransport::runRecvLoop() {
 	}
 }
 
+void DtlsTransport::handleTimeout() {
+	std::lock_guard lock(mSslMutex);
+
+	// Warning: This function breaks the usual return value convention
+	int ret = DTLSv1_handle_timeout(mSsl);
+	if (ret < 0) {
+		throw std::runtime_error("Handshake timeout"); // write BIO can't fail
+	} else if (ret > 0) {
+		LOG_VERBOSE << "DTLS retransmit done";
+	}
+
+	struct timeval tv = {};
+	if (DTLSv1_get_timeout(mSsl, &tv)) {
+		auto timeout = milliseconds(tv.tv_sec * 1000 + tv.tv_usec / 1000);
+		// Also handle handshake timeout manually because OpenSSL actually
+		// doesn't... OpenSSL backs off exponentially in base 2 starting from the
+		// recommended 1s so this allows for 5 retransmissions and fails after
+		// roughly 30s.
+		if (timeout > 30s)
+			throw std::runtime_error("Handshake timeout");
+
+		LOG_VERBOSE << "DTLS retransmit timeout is " << timeout.count() << "ms";
+		ThreadPool::Instance().schedule(timeout, [weak_this = weak_from_this()]() {
+			if (auto locked = weak_this.lock())
+				locked->doRecv();
+		});
+	}
+}
+
 int DtlsTransport::CertificateCallback(int /*preverify_ok*/, X509_STORE_CTX *ctx) {
 	SSL *ssl =
 	    static_cast<SSL *>(X509_STORE_CTX_get_ex_data(ctx, SSL_get_ex_data_X509_STORE_CTX_idx()));
@@ -602,7 +1033,7 @@ int DtlsTransport::CertificateCallback(int /*preverify_ok*/, X509_STORE_CTX *ctx
 	    static_cast<DtlsTransport *>(SSL_get_ex_data(ssl, DtlsTransport::TransportExIndex));
 
 	X509 *crt = X509_STORE_CTX_get_current_cert(ctx);
-	string fingerprint = make_fingerprint(crt);
+	string fingerprint = make_fingerprint(crt, t->mFingerprintAlgorithm);
 
 	return t->mVerifierCallback(fingerprint) ? 1 : 0;
 }

@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2019 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #include "candidate.hpp"
@@ -99,7 +89,7 @@ void Candidate::parse(string candidate) {
 
 	PLOG_VERBOSE << "Parsing candidate: " << candidate;
 
-	// See RFC 8445 for format
+	// See RFC 8839 for format
 	std::istringstream iss(candidate);
 	string typ_;
 	if (!(iss >> mFoundation >> mComponent >> mTransportString >> mPriority &&
@@ -138,6 +128,24 @@ void Candidate::parse(string candidate) {
 void Candidate::hintMid(string mid) {
 	if (!mMid)
 		mMid.emplace(std::move(mid));
+}
+
+void Candidate::changeAddress(string addr) { changeAddress(std::move(addr), mService); }
+
+void Candidate::changeAddress(string addr, uint16_t port) {
+	changeAddress(std::move(addr), std::to_string(port));
+}
+
+void Candidate::changeAddress(string addr, string service) {
+	mNode = std::move(addr);
+	mService = std::move(service);
+
+	mFamily = Family::Unresolved;
+	mAddress.clear();
+	mPort = 0;
+
+	if (!resolve(ResolveMode::Simple))
+		throw std::invalid_argument("Invalid candidate address \"" + addr + ":" + service + "\"");
 }
 
 bool Candidate::resolve(ResolveMode mode) {
@@ -240,40 +248,40 @@ optional<uint16_t> Candidate::port() const {
 	return isResolved() ? std::make_optional(mPort) : nullopt;
 }
 
-} // namespace rtc
-
-std::ostream &operator<<(std::ostream &out, const rtc::Candidate &candidate) {
-	return out << std::string(candidate);
+std::ostream &operator<<(std::ostream &out, const Candidate &candidate) {
+	return out << string(candidate);
 }
 
-std::ostream &operator<<(std::ostream &out, const rtc::Candidate::Type &type) {
+std::ostream &operator<<(std::ostream &out, const Candidate::Type &type) {
 	switch (type) {
-	case rtc::Candidate::Type::Host:
+	case Candidate::Type::Host:
 		return out << "host";
-	case rtc::Candidate::Type::PeerReflexive:
+	case Candidate::Type::PeerReflexive:
 		return out << "prflx";
-	case rtc::Candidate::Type::ServerReflexive:
+	case Candidate::Type::ServerReflexive:
 		return out << "srflx";
-	case rtc::Candidate::Type::Relayed:
+	case Candidate::Type::Relayed:
 		return out << "relay";
 	default:
 		return out << "unknown";
 	}
 }
 
-std::ostream &operator<<(std::ostream &out, const rtc::Candidate::TransportType &transportType) {
+std::ostream &operator<<(std::ostream &out, const Candidate::TransportType &transportType) {
 	switch (transportType) {
-	case rtc::Candidate::TransportType::Udp:
+	case Candidate::TransportType::Udp:
 		return out << "UDP";
-	case rtc::Candidate::TransportType::TcpActive:
+	case Candidate::TransportType::TcpActive:
 		return out << "TCP_active";
-	case rtc::Candidate::TransportType::TcpPassive:
+	case Candidate::TransportType::TcpPassive:
 		return out << "TCP_passive";
-	case rtc::Candidate::TransportType::TcpSo:
+	case Candidate::TransportType::TcpSo:
 		return out << "TCP_so";
-	case rtc::Candidate::TransportType::TcpUnknown:
+	case Candidate::TransportType::TcpUnknown:
 		return out << "TCP_unknown";
 	default:
 		return out << "unknown";
 	}
 }
+
+} // namespace rtc

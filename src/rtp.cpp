@@ -3,19 +3,9 @@
  * Copyright (c) 2020 Paul-Louis Ageneau
  * Copyright (c) 2020 Filip Klembara (in2core)
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #include "rtp.hpp"
@@ -41,6 +31,23 @@
 
 namespace rtc {
 
+bool IsRtcp(const binary &data) {
+	if (data.size() < 8)
+		return false;
+
+	uint8_t payloadType = std::to_integer<uint8_t>(data[1]) & 0x7F;
+	PLOG_VERBOSE << "Demultiplexing RTCP and RTP with payload type, value=" << int(payloadType);
+
+	// RFC 5761 Multiplexing RTP and RTCP 4. Distinguishable RTP and RTCP Packets
+	// https://www.rfc-editor.org/rfc/rfc5761.html#section-4
+	// It is RECOMMENDED to follow the guidelines in the RTP/AVP profile for the choice of RTP
+	// payload type values, with the additional restriction that payload type values in the
+	// range 64-95 MUST NOT be used. Specifically, dynamic RTP payload types SHOULD be chosen in
+	// the range 96-127 where possible. Values below 64 MAY be used if that is insufficient
+	// [...]
+	return (payloadType >= 64 && payloadType <= 95); // Range 64-95 (inclusive) MUST be RTCP
+}
+
 uint8_t RtpHeader::version() const { return _first >> 6; }
 bool RtpHeader::padding() const { return (_first >> 5) & 0x01; }
 bool RtpHeader::extension() const { return (_first >> 4) & 0x01; }
@@ -52,41 +59,30 @@ uint32_t RtpHeader::timestamp() const { return ntohl(_timestamp); }
 uint32_t RtpHeader::ssrc() const { return ntohl(_ssrc); }
 
 size_t RtpHeader::getSize() const {
-	return reinterpret_cast<const char *>(&_csrc) - reinterpret_cast<const char *>(this) +
-	       sizeof(SSRC) * csrcCount();
+	return reinterpret_cast<const char *>(&_ssrc + 1 + csrcCount()) -
+	       reinterpret_cast<const char *>(this);
 }
 
 size_t RtpHeader::getExtensionHeaderSize() const {
-	auto header = reinterpret_cast<const RtpExtensionHeader *>(getExtensionHeader());
-	if (header) {
-		return header->getSize() + sizeof(RtpExtensionHeader);
-	}
-	return 0;
+	auto header = getExtensionHeader();
+	return header ? header->getSize() + sizeof(RtpExtensionHeader) : 0;
 }
 
 const RtpExtensionHeader *RtpHeader::getExtensionHeader() const {
-	if (extension()) {
-		auto header = reinterpret_cast<const char *>(&_csrc) + sizeof(SSRC) * csrcCount();
-		return reinterpret_cast<const RtpExtensionHeader *>(header);
-	}
-	return nullptr;
+	return extension() ? reinterpret_cast<const RtpExtensionHeader *>(&_ssrc + 1 + csrcCount())
+	                   : nullptr;
 }
 
 RtpExtensionHeader *RtpHeader::getExtensionHeader() {
-	if (extension()) {
-		auto header = reinterpret_cast<char *>(&_csrc) + sizeof(SSRC) * csrcCount();
-		return reinterpret_cast<RtpExtensionHeader *>(header);
-	}
-	return nullptr;
+	return extension() ? reinterpret_cast<RtpExtensionHeader *>(&_ssrc + 1 + csrcCount()) : nullptr;
 }
 
 const char *RtpHeader::getBody() const {
-	return reinterpret_cast<const char *>(&_csrc) + sizeof(SSRC) * csrcCount() +
-	       getExtensionHeaderSize();
+	return reinterpret_cast<const char *>(&_ssrc + 1 + csrcCount()) + getExtensionHeaderSize();
 }
 
 char *RtpHeader::getBody() {
-	return reinterpret_cast<char *>(&_csrc) + sizeof(SSRC) * csrcCount() + getExtensionHeaderSize();
+	return reinterpret_cast<char *>(&_ssrc + 1 + csrcCount()) + getExtensionHeaderSize();
 }
 
 void RtpHeader::preparePacket() { _first |= (1 << 7); }
@@ -134,12 +130,22 @@ void RtpExtensionHeader::setHeaderLength(uint16_t headerLength) {
 
 void RtpExtensionHeader::clearBody() { std::memset(getBody(), 0, getSize()); }
 
-void RtpExtensionHeader::writeCurrentVideoOrientation(size_t offset, uint8_t id, uint8_t value) {
-	if ((id == 0) || (id > 14) || ((offset + 2) > getSize()))
+void RtpExtensionHeader::writeOneByteHeader(size_t offset, uint8_t id, const byte *value,
+                                            size_t size) {
+	if ((id == 0) || (id > 14) || (size == 0) || (size > 16) || ((offset + 1 + size) > getSize()))
 		return;
 	auto buf = getBody() + offset;
 	buf[0] = id << 4;
-	buf[1] = value;
+	if (size != 1) {
+		buf[0] |= (uint8_t(size) - 1);
+	}
+	std::memcpy(buf + 1, value, size);
+}
+
+void RtpExtensionHeader::writeCurrentVideoOrientation(size_t offset, const uint8_t id,
+                                                      uint8_t value) {
+	auto v = std::byte{value};
+	writeOneByteHeader(offset, id, &v, 1);
 }
 
 SSRC RtcpReportBlock::getSSRC() const { return ntohl(_ssrc); }
@@ -163,25 +169,26 @@ void RtcpReportBlock::preparePacket(SSRC in_ssrc, [[maybe_unused]] unsigned int 
 
 void RtcpReportBlock::setSSRC(SSRC in_ssrc) { _ssrc = htonl(in_ssrc); }
 
-void RtcpReportBlock::setPacketsLost([[maybe_unused]] unsigned int packetsLost,
-                                     [[maybe_unused]] unsigned int totalPackets) {
-	// TODO Implement loss percentages.
-	_fractionLostAndPacketsLost = 0;
+void RtcpReportBlock::setPacketsLost(uint8_t fractionLost,
+                                     unsigned int packetsLostCount) {
+	_fractionLostAndPacketsLost = htonl((uint32_t(fractionLost) << 24) | (packetsLostCount & 0xFFFFFF));
 }
 
-unsigned int RtcpReportBlock::getLossPercentage() const {
-	// TODO Implement loss percentages.
-	return 0;
+uint8_t RtcpReportBlock::getFractionLost() const {
+	// Fraction lost is expressed as 8-bit fixed point number
+	// In order to get actual lost percentage divide the result by 256
+	return _fractionLostAndPacketsLost & 0xFF;
 }
 
-unsigned int RtcpReportBlock::getPacketLostCount() const {
-	// TODO Implement total packets lost.
-	return 0;
+unsigned int RtcpReportBlock::getPacketsLostCount() const {
+	return ntohl(_fractionLostAndPacketsLost & 0xFFFFFF00);
 }
 
 uint16_t RtcpReportBlock::seqNoCycles() const { return ntohs(_seqNoCycles); }
 
 uint16_t RtcpReportBlock::highestSeqNo() const { return ntohs(_highestSeqNo); }
+
+uint32_t RtcpReportBlock::extendedHighestSeqNo() const { return (seqNoCycles() <<  16) | highestSeqNo(); }
 
 uint32_t RtcpReportBlock::jitter() const { return ntohl(_jitter); }
 
@@ -194,7 +201,7 @@ void RtcpReportBlock::setSeqNo(uint16_t highestSeqNo, uint16_t seqNoCycles) {
 
 void RtcpReportBlock::setJitter(uint32_t jitter) { _jitter = htonl(jitter); }
 
-void RtcpReportBlock::setNTPOfSR(uint64_t ntp) { _lastReport = htonll(ntp >> 16u); }
+void RtcpReportBlock::setNTPOfSR(uint64_t ntp) { _lastReport = htonl((uint32_t)(ntp >> 16)); }
 
 uint32_t RtcpReportBlock::getNTPOfSR() const { return ntohl(_lastReport) << 16u; }
 

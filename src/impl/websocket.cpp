@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2020-2021 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #if RTC_ENABLE_WEBSOCKET
@@ -21,14 +11,17 @@
 #include "websocket.hpp"
 #include "common.hpp"
 #include "internals.hpp"
-#include "threadpool.hpp"
+#include "processor.hpp"
+#include "utils.hpp"
 
+#include "httpproxytransport.hpp"
 #include "tcptransport.hpp"
 #include "tlstransport.hpp"
 #include "verifiedtlstransport.hpp"
 #include "wstransport.hpp"
 
 #include <array>
+#include <chrono>
 #include <regex>
 
 #ifdef _WIN32
@@ -38,18 +31,38 @@
 namespace rtc::impl {
 
 using namespace std::placeholders;
+using namespace std::chrono_literals;
+using std::chrono::milliseconds;
 
 WebSocket::WebSocket(optional<Configuration> optConfig, certificate_ptr certificate)
     : config(optConfig ? std::move(*optConfig) : Configuration()),
-      mCertificate(std::move(certificate)), mIsSecure(mCertificate != nullptr),
-      mRecvQueue(RECV_QUEUE_LIMIT, message_size_func) {
+      mCertificate(certificate ? std::move(certificate) : std::move(loadCertificate(config))),
+      mIsSecure(mCertificate != nullptr), mRecvQueue(RECV_QUEUE_LIMIT, message_size_func) {
 	PLOG_VERBOSE << "Creating WebSocket";
+	if (config.proxyServer) {
+		if (config.proxyServer->type == ProxyServer::Type::Socks5)
+			throw std::invalid_argument(
+			    "Proxy server support for WebSocket is not implemented for Socks5");
+		if (config.proxyServer->username || config.proxyServer->password) {
+			PLOG_WARNING << "HTTP authentication support for proxy is not implemented";
+		}
+	}
 }
 
-WebSocket::~WebSocket() {
-	PLOG_VERBOSE << "Destroying WebSocket";
-	remoteClose();
+certificate_ptr WebSocket::loadCertificate(const Configuration& config) {
+	if (!config.certificatePemFile)
+		return nullptr;
+
+	if (config.keyPemFile)
+		return std::make_shared<Certificate>(
+			Certificate::FromFile(*config.certificatePemFile, *config.keyPemFile,
+										config.keyPemPass.value_or("")));
+
+	throw std::invalid_argument(
+		"Either none or both certificate and key PEM files must be specified");
 }
+
+WebSocket::~WebSocket() { PLOG_VERBOSE << "Destroying WebSocket"; }
 
 void WebSocket::open(const string &url) {
 	PLOG_VERBOSE << "Opening WebSocket to URL: " << url;
@@ -57,7 +70,7 @@ void WebSocket::open(const string &url) {
 	if (state != State::Closed)
 		throw std::logic_error("WebSocket must be closed before opening");
 
-	// Modified regex from RFC 3986, see https://tools.ietf.org/html/rfc3986#appendix-B
+	// Modified regex from RFC 3986, see https://www.rfc-editor.org/rfc/rfc3986.html#appendix-B
 	static const char *rs =
 	    R"(^(([^:.@/?#]+):)?(/{0,2}((([^:@]*)(:([^@]*))?)@)?(([^:/?#]*)(:([^/?#]*))?))?([^?#]*)(\?([^#]*))?(#(.*))?)";
 
@@ -76,6 +89,12 @@ void WebSocket::open(const string &url) {
 
 	mIsSecure = (scheme != "ws");
 
+	string username = utils::url_decode(m[6]);
+	string password = utils::url_decode(m[8]);
+	if (!username.empty() || !password.empty()) {
+		PLOG_WARNING << "HTTP authentication support for WebSocket is not implemented";
+	}
+
 	string host;
 	string hostname = m[10];
 	string service = m[12];
@@ -86,10 +105,13 @@ void WebSocket::open(const string &url) {
 		host = hostname + ':' + service;
 	}
 
-	while (!hostname.empty() && hostname.front() == '[')
+	if (hostname.front() == '[' && hostname.back() == ']') {
+		// IPv6 literal
 		hostname.erase(hostname.begin());
-	while (!hostname.empty() && hostname.back() == ']')
 		hostname.pop_back();
+	} else {
+		hostname = utils::url_decode(hostname);
+	}
 
 	string path = m[13];
 	if (path.empty())
@@ -98,11 +120,18 @@ void WebSocket::open(const string &url) {
 	if (string query = m[15]; !query.empty())
 		path += "?" + query;
 
-	mHostname = hostname; // for TLS SNI
+	mHostname = hostname; // for TLS SNI and Proxy
+	mService = service;   // For proxy
 	std::atomic_store(&mWsHandshake, std::make_shared<WsHandshake>(host, path, config.protocols));
 
 	changeState(State::Connecting);
-	setTcpTransport(std::make_shared<TcpTransport>(hostname, service, nullptr));
+
+	if (config.proxyServer) {
+		setTcpTransport(std::make_shared<TcpTransport>(
+		    config.proxyServer->hostname, std::to_string(config.proxyServer->port), nullptr));
+	} else {
+		setTcpTransport(std::make_shared<TcpTransport>(hostname, service, nullptr));
+	}
 }
 
 void WebSocket::close() {
@@ -111,43 +140,32 @@ void WebSocket::close() {
 		PLOG_VERBOSE << "Closing WebSocket";
 		changeState(State::Closing);
 		if (auto transport = std::atomic_load(&mWsTransport))
-			transport->close();
+			transport->stop();
 		else
-			changeState(State::Closed);
+			remoteClose();
 	}
 }
 
 void WebSocket::remoteClose() {
-	if (state != State::Closed) {
-		close();
+	close();
+	if (state.load() != State::Closed)
 		closeTransports();
-	}
 }
 
 bool WebSocket::isOpen() const { return state == State::Open; }
 
 bool WebSocket::isClosed() const { return state == State::Closed; }
 
-size_t WebSocket::maxMessageSize() const { return DEFAULT_MAX_MESSAGE_SIZE; }
+size_t WebSocket::maxMessageSize() const { return config.maxMessageSize.value_or(DEFAULT_WS_MAX_MESSAGE_SIZE); }
 
 optional<message_variant> WebSocket::receive() {
-	while (auto next = mRecvQueue.tryPop()) {
-		message_ptr message = *next;
-		if (message->type != Message::Control)
-			return to_variant(std::move(*message));
-	}
-	return nullopt;
+	auto next = mRecvQueue.pop();
+	return next ? std::make_optional(to_variant(std::move(**next))) : nullopt;
 }
 
 optional<message_variant> WebSocket::peek() {
-	while (auto next = mRecvQueue.peek()) {
-		message_ptr message = *next;
-		if (message->type != Message::Control)
-			return to_variant(std::move(*message));
-
-		mRecvQueue.tryPop();
-	}
-	return nullopt;
+	auto next = mRecvQueue.peek();
+	return next ? std::make_optional(to_variant(std::move(**next))) : nullopt;
 }
 
 size_t WebSocket::availableAmount() const { return mRecvQueue.amount(); }
@@ -179,13 +197,21 @@ void WebSocket::incoming(message_ptr message) {
 // Helper for WebSocket::initXTransport methods: start and emplace the transport
 template <typename T>
 shared_ptr<T> emplaceTransport(WebSocket *ws, shared_ptr<T> *member, shared_ptr<T> transport) {
-	transport->start();
 	std::atomic_store(member, transport);
+	try {
+		transport->start();
+	} catch (...) {
+		std::atomic_store(member, decltype(transport)(nullptr));
+		transport->stop();
+		throw;
+	}
+
 	if (ws->state == WebSocket::State::Closed) {
 		std::atomic_store(member, decltype(transport)(nullptr));
 		transport->stop();
 		return nullptr;
 	}
+
 	return transport;
 }
 
@@ -200,13 +226,17 @@ shared_ptr<TcpTransport> WebSocket::setTcpTransport(shared_ptr<TcpTransport> tra
 		if (std::atomic_load(&mTcpTransport))
 			throw std::logic_error("TCP transport is already set");
 
+		transport->onBufferedAmount(weak_bind(&WebSocket::triggerBufferedAmount, this, _1));
+
 		transport->onStateChange([this, weak_this = weak_from_this()](State transportState) {
 			auto shared_this = weak_this.lock();
 			if (!shared_this)
 				return;
 			switch (transportState) {
 			case State::Connected:
-				if (mIsSecure)
+				if (config.proxyServer)
+					initProxyTransport();
+				else if (mIsSecure)
 					initTlsTransport();
 				else
 					initWsTransport();
@@ -224,12 +254,66 @@ shared_ptr<TcpTransport> WebSocket::setTcpTransport(shared_ptr<TcpTransport> tra
 			}
 		});
 
+		// WS transport sends a ping on read timeout
+		auto pingInterval = config.pingInterval.value_or(10000ms);
+		if (pingInterval > milliseconds::zero())
+			transport->setReadTimeout(pingInterval);
+
+		scheduleConnectionTimeout();
+
 		return emplaceTransport(this, &mTcpTransport, std::move(transport));
 
 	} catch (const std::exception &e) {
 		PLOG_ERROR << e.what();
 		remoteClose();
 		throw std::runtime_error("TCP transport initialization failed");
+	}
+}
+
+shared_ptr<HttpProxyTransport> WebSocket::initProxyTransport() {
+	PLOG_VERBOSE << "Starting Tcp Proxy transport";
+	using State = HttpProxyTransport::State;
+	try {
+		if (auto transport = std::atomic_load(&mProxyTransport))
+			return transport;
+
+		auto lower = std::atomic_load(&mTcpTransport);
+		if (!lower)
+			throw std::logic_error("No underlying TCP transport for Proxy transport");
+
+		auto stateChangeCallback = [this, weak_this = weak_from_this()](State transportState) {
+			auto shared_this = weak_this.lock();
+			if (!shared_this)
+				return;
+			switch (transportState) {
+			case State::Connected:
+				if (mIsSecure)
+					initTlsTransport();
+				else
+					initWsTransport();
+				break;
+			case State::Failed:
+				triggerError("Proxy connection failed");
+				remoteClose();
+				break;
+			case State::Disconnected:
+				remoteClose();
+				break;
+			default:
+				// Ignore
+				break;
+			}
+		};
+
+		auto transport = std::make_shared<HttpProxyTransport>(
+		    lower, mHostname.value(), mService.value(), stateChangeCallback);
+
+		return emplaceTransport(this, &mProxyTransport, std::move(transport));
+
+	} catch (const std::exception &e) {
+		PLOG_ERROR << e.what();
+		remoteClose();
+		throw std::runtime_error("Tcp Proxy transport initialization failed");
 	}
 }
 
@@ -240,9 +324,20 @@ shared_ptr<TlsTransport> WebSocket::initTlsTransport() {
 		if (auto transport = std::atomic_load(&mTlsTransport))
 			return transport;
 
-		auto lower = std::atomic_load(&mTcpTransport);
-		if (!lower)
-			throw std::logic_error("No underlying TCP transport for TLS transport");
+		variant<shared_ptr<TcpTransport>, shared_ptr<HttpProxyTransport>> lower;
+		if (config.proxyServer) {
+			auto transport = std::atomic_load(&mProxyTransport);
+			if (!transport)
+				throw std::logic_error("No underlying proxy transport for TLS transport");
+
+			lower = transport;
+		} else {
+			auto transport = std::atomic_load(&mTcpTransport);
+			if (!transport)
+				throw std::logic_error("No underlying TCP transport for TLS transport");
+
+			lower = transport;
+		}
 
 		auto stateChangeCallback = [this, weak_this = weak_from_this()](State transportState) {
 			auto shared_this = weak_this.lock();
@@ -276,7 +371,8 @@ shared_ptr<TlsTransport> WebSocket::initTlsTransport() {
 		shared_ptr<TlsTransport> transport;
 		if (verify)
 			transport = std::make_shared<VerifiedTlsTransport>(lower, mHostname.value(),
-			                                                   mCertificate, stateChangeCallback);
+			                                                   mCertificate, stateChangeCallback,
+			                                                   config.caCertificatePemFile);
 		else
 			transport =
 			    std::make_shared<TlsTransport>(lower, mHostname, mCertificate, stateChangeCallback);
@@ -297,11 +393,18 @@ shared_ptr<WsTransport> WebSocket::initWsTransport() {
 		if (auto transport = std::atomic_load(&mWsTransport))
 			return transport;
 
-		variant<shared_ptr<TcpTransport>, shared_ptr<TlsTransport>> lower;
+		variant<shared_ptr<TcpTransport>, shared_ptr<HttpProxyTransport>, shared_ptr<TlsTransport>>
+		    lower;
 		if (mIsSecure) {
 			auto transport = std::atomic_load(&mTlsTransport);
 			if (!transport)
 				throw std::logic_error("No underlying TLS transport for WebSocket transport");
+
+			lower = transport;
+		} else if (config.proxyServer) {
+			auto transport = std::atomic_load(&mProxyTransport);
+			if (!transport)
+				throw std::logic_error("No underlying proxy transport for WebSocket transport");
 
 			lower = transport;
 		} else {
@@ -340,8 +443,9 @@ shared_ptr<WsTransport> WebSocket::initWsTransport() {
 			}
 		};
 
-		auto transport = std::make_shared<WsTransport>(
-		    lower, mWsHandshake, weak_bind(&WebSocket::incoming, this, _1), stateChangeCallback);
+		auto transport = std::make_shared<WsTransport>(lower, mWsHandshake, config,
+		                                               weak_bind(&WebSocket::incoming, this, _1),
+		                                               stateChangeCallback);
 
 		return emplaceTransport(this, &mWsTransport, std::move(transport));
 
@@ -382,6 +486,9 @@ void WebSocket::closeTransports() {
 	if (ws)
 		ws->onRecv(nullptr);
 
+	if (tcp)
+		tcp->onBufferedAmount(nullptr);
+
 	using array = std::array<shared_ptr<Transport>, 3>;
 	array transports{std::move(ws), std::move(tls), std::move(tcp)};
 
@@ -389,16 +496,36 @@ void WebSocket::closeTransports() {
 		if (t)
 			t->onStateChange(nullptr);
 
-	ThreadPool::Instance().enqueue([transports = std::move(transports)]() mutable {
-		for (const auto &t : transports)
-			if (t)
-				t->stop();
+	TearDownProcessor::Instance().enqueue(
+	    [transports = std::move(transports), token = Init::Instance().token()]() mutable {
+		    for (const auto &t : transports) {
+			    if (t) {
+				    t->stop();
+				    break;
+			    }
+		    }
 
-		for (auto &t : transports)
-			t.reset();
-	});
+		    for (auto &t : transports)
+			    t.reset();
+	    });
 
 	triggerClosed();
+}
+
+void WebSocket::scheduleConnectionTimeout() {
+	auto defaultTimeout = 30s;
+	auto timeout = config.connectionTimeout.value_or(milliseconds(defaultTimeout));
+	if (timeout > milliseconds::zero()) {
+		ThreadPool::Instance().schedule(timeout, [weak_this = weak_from_this()]() {
+			if (auto locked = weak_this.lock()) {
+				if (locked->state == WebSocket::State::Connecting) {
+					PLOG_WARNING << "WebSocket connection timed out";
+					locked->triggerError("Connection timed out");
+					locked->remoteClose();
+				}
+			}
+		});
+	}
 }
 
 } // namespace rtc::impl

@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2020-2021 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #include "track.hpp"
@@ -25,6 +15,8 @@ namespace rtc {
 
 Track::Track(impl_ptr<impl::Track> impl)
     : CheshireCat<impl::Track>(impl), Channel(std::dynamic_pointer_cast<impl::Channel>(impl)) {}
+
+Track::~Track() {}
 
 string Track::mid() const { return impl()->mid(); }
 
@@ -52,13 +44,34 @@ void Track::setMediaHandler(shared_ptr<MediaHandler> handler) {
 	impl()->setMediaHandler(std::move(handler));
 }
 
+void Track::chainMediaHandler(shared_ptr<MediaHandler> handler) {
+	if (auto first = impl()->getMediaHandler())
+		first->addToChain(std::move(handler));
+	else
+		impl()->setMediaHandler(std::move(handler));
+}
+
 bool Track::requestKeyframe() {
+	// only push PLI for video
+	if (description().type() == "video")
+		if (auto handler = impl()->getMediaHandler())
+			return handler->requestKeyframe([this](message_ptr m) { impl()->transportSend(m); });
+
+	return false;
+}
+
+bool Track::requestBitrate(unsigned int bitrate) {
 	if (auto handler = impl()->getMediaHandler())
-		return handler->requestKeyframe();
+		return handler->requestBitrate(bitrate,
+		                               [this](message_ptr m) { impl()->transportSend(m); });
 
 	return false;
 }
 
 shared_ptr<MediaHandler> Track::getMediaHandler() { return impl()->getMediaHandler(); }
+
+void Track::onFrame(std::function<void(binary data, FrameInfo frame)> callback) {
+	impl()->onFrame(callback);
+}
 
 } // namespace rtc

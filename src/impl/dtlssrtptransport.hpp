@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2020 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #ifndef RTC_IMPL_DTLS_SRTP_TRANSPORT_H
@@ -38,25 +28,36 @@ class DtlsSrtpTransport final : public DtlsTransport {
 public:
 	static void Init();
 	static void Cleanup();
+	static bool IsGcmSupported();
 
 	DtlsSrtpTransport(shared_ptr<IceTransport> lower, certificate_ptr certificate,
-	                  optional<size_t> mtu, verifier_callback verifierCallback,
-	                  message_callback srtpRecvCallback, state_callback stateChangeCallback);
+	                  optional<size_t> mtu, CertificateFingerprint::Algorithm fingerprintAlgorithm,
+	                  verifier_callback verifierCallback, message_callback srtpRecvCallback,
+	                  state_callback stateChangeCallback);
 	~DtlsSrtpTransport();
 
 	bool sendMedia(message_ptr message);
 
 private:
-	void incoming(message_ptr message) override;
+	void recvMedia(message_ptr message);
+	bool demuxMessage(message_ptr message) override;
 	void postHandshake() override;
 
+#if !USE_GNUTLS && !USE_MBEDTLS
+	struct ProfileParams {
+		srtp_profile_t srtpProfile;
+		size_t keySize;
+		size_t saltSize;
+	};
+
+	ProfileParams getProfileParamsFromName(string_view name);
+#endif
+
 	message_callback mSrtpRecvCallback;
-
 	srtp_t mSrtpIn, mSrtpOut;
-
 	std::atomic<bool> mInitDone = false;
-	unsigned char mClientSessionKey[SRTP_AES_ICM_128_KEY_LEN_WSALT];
-	unsigned char mServerSessionKey[SRTP_AES_ICM_128_KEY_LEN_WSALT];
+	std::vector<unsigned char> mClientSessionKey;
+	std::vector<unsigned char> mServerSessionKey;
 	std::mutex sendMutex;
 };
 

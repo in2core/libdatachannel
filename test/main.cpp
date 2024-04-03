@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2019 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #include <chrono>
@@ -25,7 +15,9 @@
 using namespace std;
 using namespace chrono_literals;
 
-void test_connectivity();
+void test_connectivity(bool signal_wrong_fingerprint);
+void test_negotiated();
+void test_reliability();
 void test_turn_connectivity();
 void test_track();
 void test_capi_connectivity();
@@ -50,18 +42,45 @@ int main(int argc, char **argv) {
 	// C++ API tests
 	try {
 		cout << endl << "*** Running WebRTC connectivity test..." << endl;
-		test_connectivity();
+		test_connectivity(false);
 		cout << "*** Finished WebRTC connectivity test" << endl;
 	} catch (const exception &e) {
 		cerr << "WebRTC connectivity test failed: " << e.what() << endl;
 		return -1;
 	}
 	try {
+		cout << endl << "*** Running WebRTC broken fingerprint test..." << endl;
+		test_connectivity(true);
+		cerr << "WebRTC connectivity test failed to detect broken fingerprint" << endl;
+		return -1;
+	} catch (const exception &) {
+	}
+
+// TODO: Temporarily disabled as the Open Relay TURN server is unreliable
+/*
+	try {
 		cout << endl << "*** Running WebRTC TURN connectivity test..." << endl;
 		test_turn_connectivity();
 		cout << "*** Finished WebRTC TURN connectivity test" << endl;
 	} catch (const exception &e) {
 		cerr << "WebRTC TURN connectivity test failed: " << e.what() << endl;
+		return -1;
+	}
+*/
+	try {
+		cout << endl << "*** Running WebRTC negotiated DataChannel test..." << endl;
+		test_negotiated();
+		cout << "*** Finished WebRTC negotiated DataChannel test" << endl;
+	} catch (const exception &e) {
+		cerr << "WebRTC negotiated DataChannel test failed: " << e.what() << endl;
+		return -1;
+	}
+	try {
+		cout << endl << "*** Running WebRTC reliability mode test..." << endl;
+		test_reliability();
+		cout << "*** Finished WebRTC reliaility mode test" << endl;
+	} catch (const exception &e) {
+		cerr << "WebRTC reliability test failed: " << e.what() << endl;
 		return -1;
 	}
 #if RTC_ENABLE_MEDIA

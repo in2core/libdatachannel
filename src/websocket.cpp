@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2020-2021 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #if RTC_ENABLE_WEBSOCKET
@@ -51,14 +41,13 @@ bool WebSocket::isOpen() const { return impl()->state.load() == State::Open; }
 
 bool WebSocket::isClosed() const { return impl()->state.load() == State::Closed; }
 
-size_t WebSocket::maxMessageSize() const { return DEFAULT_MAX_MESSAGE_SIZE; }
+size_t WebSocket::maxMessageSize() const { return impl()->maxMessageSize(); }
 
-void WebSocket::open(const string &url) {
-	PLOG_VERBOSE << "Opening WebSocket to URL: " << url;
-	impl()->open(url);
-}
+void WebSocket::open(const string &url) { impl()->open(url); }
 
 void WebSocket::close() { impl()->close(); }
+
+void WebSocket::forceClose() { impl()->remoteClose(); }
 
 bool WebSocket::send(message_variant data) {
 	return impl()->outgoing(make_message(std::move(data)));
@@ -77,6 +66,29 @@ optional<string> WebSocket::path() const {
 	auto state = impl()->state.load();
 	auto handshake = impl()->getWsHandshake();
 	return state != State::Connecting && handshake ? make_optional(handshake->path()) : nullopt;
+}
+
+std::ostream &operator<<(std::ostream &out, WebSocket::State state) {
+	using State = WebSocket::State;
+	const char *str;
+	switch (state) {
+	case State::Connecting:
+		str = "connecting";
+		break;
+	case State::Open:
+		str = "open";
+		break;
+	case State::Closing:
+		str = "closing";
+		break;
+	case State::Closed:
+		str = "closed";
+		break;
+	default:
+		str = "unknown";
+		break;
+	}
+	return out << str;
 }
 
 } // namespace rtc

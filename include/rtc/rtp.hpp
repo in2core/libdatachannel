@@ -3,19 +3,9 @@
  * Copyright (c) 2020 Paul-Louis Ageneau
  * Copyright (c) 2020 Filip Klembara (in2core)
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #ifndef RTC_RTP_HPP
@@ -28,6 +18,8 @@
 namespace rtc {
 
 typedef uint32_t SSRC;
+
+RTC_CPP_EXPORT bool IsRtcp(const binary &data);
 
 #pragma pack(push, 1)
 
@@ -47,6 +39,7 @@ struct RTC_CPP_EXPORT RtpExtensionHeader {
 
 	void clearBody();
 	void writeCurrentVideoOrientation(size_t offset, uint8_t id, uint8_t value);
+	void writeOneByteHeader(size_t offset, uint8_t id, const byte *value, size_t size);
 };
 
 struct RTC_CPP_EXPORT RtpHeader {
@@ -55,7 +48,7 @@ struct RTC_CPP_EXPORT RtpHeader {
 	uint16_t _seqNumber;
 	uint32_t _timestamp;
 	SSRC _ssrc;
-	SSRC _csrc[16];
+	// The following field is SSRC _csrc[]
 
 	[[nodiscard]] uint8_t version() const;
 	[[nodiscard]] bool padding() const;
@@ -96,19 +89,20 @@ struct RTC_CPP_EXPORT RtcpReportBlock {
 
 	[[nodiscard]] uint16_t seqNoCycles() const;
 	[[nodiscard]] uint16_t highestSeqNo() const;
+	[[nodiscard]] uint32_t extendedHighestSeqNo() const;
 	[[nodiscard]] uint32_t jitter() const;
 	[[nodiscard]] uint32_t delaySinceSR() const;
 
 	[[nodiscard]] SSRC getSSRC() const;
 	[[nodiscard]] uint32_t getNTPOfSR() const;
-	[[nodiscard]] unsigned int getLossPercentage() const;
-	[[nodiscard]] unsigned int getPacketLostCount() const;
+	[[nodiscard]] uint8_t getFractionLost() const;
+	[[nodiscard]] unsigned int getPacketsLostCount() const;
 
 	void preparePacket(SSRC in_ssrc, unsigned int packetsLost, unsigned int totalPackets,
 	                   uint16_t highestSeqNo, uint16_t seqNoCycles, uint32_t jitter,
 	                   uint64_t lastSR_NTP, uint64_t lastSR_DELAY);
 	void setSSRC(SSRC in_ssrc);
-	void setPacketsLost(unsigned int packetsLost, unsigned int totalPackets);
+	void setPacketsLost(uint8_t fractionLost, unsigned int packetsLostCount);
 	void setSeqNo(uint16_t highestSeqNo, uint16_t seqNoCycles);
 	void setJitter(uint32_t jitter);
 	void setNTPOfSR(uint64_t ntp);
@@ -361,23 +355,23 @@ struct RTC_CPP_EXPORT RtpRtx {
 };
 
 // For backward compatibility, do not use
-using RTP_ExtensionHeader = RtpExtensionHeader;
-using RTP = RtpHeader;
-using RTCP_ReportBlock = RtcpReportBlock;
-using RTCP_HEADER = RtcpHeader;
-using RTCP_FB_HEADER = RtcpFbHeader;
-using RTCP_SR = RtcpSr;
-using RTCP_SDES_ITEM = RtcpSdesItem;
-using RTCP_SDES_CHUNK = RtcpSdesChunk;
-using RTCP_SDES = RtcpSdes;
-using RTCP_RR = RtcpRr;
-using RTCP_REMB = RtcpRemb;
-using RTCP_PLI = RtcpPli;
-using RTCP_FIR_PART = RtcpFirPart;
-using RTCP_FIR = RtcpFir;
-using RTCP_NACK_PART = RtcpNackPart;
-using RTCP_NACK = RtcpNack;
-using RTP_RTX = RtpRtx;
+using RTP_ExtensionHeader [[deprecated]] = RtpExtensionHeader;
+using RTP [[deprecated]] = RtpHeader;
+using RTCP_ReportBlock [[deprecated]] = RtcpReportBlock;
+using RTCP_HEADER [[deprecated]] = RtcpHeader;
+using RTCP_FB_HEADER [[deprecated]] = RtcpFbHeader;
+using RTCP_SR [[deprecated]] = RtcpSr;
+using RTCP_SDES_ITEM [[deprecated]] = RtcpSdesItem;
+using RTCP_SDES_CHUNK [[deprecated]] = RtcpSdesChunk;
+using RTCP_SDES [[deprecated]] = RtcpSdes;
+using RTCP_RR [[deprecated]] = RtcpRr;
+using RTCP_REMB [[deprecated]] = RtcpRemb;
+using RTCP_PLI [[deprecated]] = RtcpPli;
+using RTCP_FIR_PART [[deprecated]] = RtcpFirPart;
+using RTCP_FIR [[deprecated]] = RtcpFir;
+using RTCP_NACK_PART [[deprecated]] = RtcpNackPart;
+using RTCP_NACK [[deprecated]] = RtcpNack;
+using RTP_RTX [[deprecated]] = RtpRtx;
 
 #pragma pack(pop)
 

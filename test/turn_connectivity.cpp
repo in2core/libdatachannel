@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2019 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #include "rtc/rtc.hpp"
@@ -35,41 +25,31 @@ void test_turn_connectivity() {
 	Configuration config1;
 	config1.iceTransportPolicy = TransportPolicy::Relay; // force relay
 
-	// STUN server example (not necessary, just here for testing)
-	// Please do not use outside of libdatachannel tests
-	config1.iceServers.emplace_back("stun:stun.ageneau.net:3478");
-	// TURN server example
-	// Please do not use outside of libdatachannel tests
-	config1.iceServers.emplace_back("turn:datachannel_test:14018314739877@stun.ageneau.net:3478");
+	// TURN server example (use your own server in production)
+	config1.iceServers.emplace_back(
+	    "turn:openrelayproject:openrelayproject@openrelay.metered.ca:80");
 
 	PeerConnection pc1(config1);
 
 	Configuration config2;
-	config2.iceTransportPolicy = TransportPolicy::Relay; // force relay
 
-	// STUN server example (not necessary, just here for testing)
-	// Please do not use outside of libdatachannel tests
-	config1.iceServers.emplace_back("stun:stun.ageneau.net:3478");
-	// TURN server example
-	// Please do not use outside of libdatachannel tests
-	config2.iceServers.emplace_back("turn:datachannel_test:14018314739877@stun.ageneau.net:3478");
+	// STUN server example (use your own server in production)
+	config2.iceServers.emplace_back("stun:openrelay.metered.ca:80");
 
 	PeerConnection pc2(config2);
 
-	pc1.onLocalDescription([&pc2](Description sdp) {
-		cout << "Description 1: " << sdp << endl;
-		pc2.setRemoteDescription(string(sdp));
-	});
-
-	pc1.onLocalCandidate([&pc2](Candidate candidate) {
-		cout << "Candidate 1: " << candidate << endl;
-		pc2.addRemoteCandidate(string(candidate));
-	});
-
 	pc1.onStateChange([](PeerConnection::State state) { cout << "State 1: " << state << endl; });
 
-	pc1.onGatheringStateChange([](PeerConnection::GatheringState state) {
+	pc1.onIceStateChange(
+	    [](PeerConnection::IceState state) { cout << "ICE state 1: " << state << endl; });
+
+	pc1.onGatheringStateChange([&pc1, &pc2](PeerConnection::GatheringState state) {
 		cout << "Gathering state 1: " << state << endl;
+		if (state == PeerConnection::GatheringState::Complete) {
+			auto sdp = pc1.localDescription().value();
+			cout << "Description 1: " << sdp << endl;
+			pc2.setRemoteDescription(string(sdp));
+		}
 	});
 
 	pc1.onSignalingStateChange([](PeerConnection::SignalingState state) {
@@ -82,11 +62,18 @@ void test_turn_connectivity() {
 	});
 
 	pc2.onLocalCandidate([&pc1](Candidate candidate) {
+		// Filter server reflexive candidates
+		if (candidate.type() != rtc::Candidate::Type::ServerReflexive)
+			return;
+
 		cout << "Candidate 2: " << candidate << endl;
 		pc1.addRemoteCandidate(string(candidate));
 	});
 
 	pc2.onStateChange([](PeerConnection::State state) { cout << "State 2: " << state << endl; });
+
+	pc2.onIceStateChange(
+	    [](PeerConnection::IceState state) { cout << "ICE state 2: " << state << endl; });
 
 	pc2.onGatheringStateChange([](PeerConnection::GatheringState state) {
 		cout << "Gathering state 2: " << state << endl;
@@ -105,8 +92,10 @@ void test_turn_connectivity() {
 		}
 
 		dc->onOpen([wdc = make_weak_ptr(dc)]() {
-			if (auto dc = wdc.lock())
+			if (auto dc = wdc.lock()) {
+				cout << "DataChannel 2: Open" << endl;
 				dc->send("Hello from 2");
+			}
 		});
 
 		dc->onMessage([](variant<binary, string> message) {
@@ -127,6 +116,9 @@ void test_turn_connectivity() {
 		cout << "DataChannel 1: Open" << endl;
 		dc1->send("Hello from 1");
 	});
+
+	dc1->onClosed([]() { cout << "DataChannel 1: Closed" << endl; });
+
 	dc1->onMessage([](const variant<binary, string> &message) {
 		if (holds_alternative<string>(message)) {
 			cout << "Message 1: " << get<string>(message) << endl;
@@ -139,9 +131,15 @@ void test_turn_connectivity() {
 	while ((!(adc2 = std::atomic_load(&dc2)) || !adc2->isOpen() || !dc1->isOpen()) && attempts--)
 		this_thread::sleep_for(1s);
 
-	if (pc1.state() != PeerConnection::State::Connected &&
+	if (pc1.state() != PeerConnection::State::Connected ||
 	    pc2.state() != PeerConnection::State::Connected)
 		throw runtime_error("PeerConnection is not connected");
+
+	if ((pc1.iceState() != PeerConnection::IceState::Connected &&
+	     pc1.iceState() != PeerConnection::IceState::Completed) ||
+	    (pc2.iceState() != PeerConnection::IceState::Connected &&
+	     pc2.iceState() != PeerConnection::IceState::Completed))
+		throw runtime_error("ICE is not connected");
 
 	if (!adc2 || !adc2->isOpen() || !dc1->isOpen())
 		throw runtime_error("DataChannel is not open");
@@ -157,21 +155,12 @@ void test_turn_connectivity() {
 
 	Candidate local, remote;
 	if (!pc1.getSelectedCandidatePair(&local, &remote))
-		throw runtime_error("getSelectedCabndidatePair failed");
+		throw runtime_error("getSelectedCandidatePair failed");
 
 	cout << "Local candidate 1:  " << local << endl;
 	cout << "Remote candidate 1: " << remote << endl;
 
-	if(local.type() != Candidate::Type::Relayed || remote.type() != Candidate::Type::Relayed)
-		throw runtime_error("Connection is not relayed as expected");
-
-	if (!pc2.getSelectedCandidatePair(&local, &remote))
-		throw runtime_error("getSelectedCabndidatePair failed");
-
-	cout << "Local candidate 2:  " << local << endl;
-	cout << "Remote candidate 2: " << remote << endl;
-
-	if(local.type() != Candidate::Type::Relayed || remote.type() != Candidate::Type::Relayed)
+	if (local.type() != Candidate::Type::Relayed)
 		throw runtime_error("Connection is not relayed as expected");
 
 	// Try to open a second data channel with another label
@@ -198,7 +187,8 @@ void test_turn_connectivity() {
 	});
 
 	auto second1 = pc1.createDataChannel("second");
-	second1->onOpen([wsecond1 = make_weak_ptr(dc1)]() {
+
+	second1->onOpen([wsecond1 = make_weak_ptr(second1)]() {
 		auto second1 = wsecond1.lock();
 		if (!second1)
 			return;
@@ -206,7 +196,10 @@ void test_turn_connectivity() {
 		cout << "Second DataChannel 1: Open" << endl;
 		second1->send("Second hello from 1");
 	});
-	dc1->onMessage([](const variant<binary, string> &message) {
+
+	second1->onClosed([]() { cout << "Second DataChannel 1: Closed" << endl; });
+
+	second1->onMessage([](const variant<binary, string> &message) {
 		if (holds_alternative<string>(message)) {
 			cout << "Second Message 1: " << get<string>(message) << endl;
 		}

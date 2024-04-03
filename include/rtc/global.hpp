@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2020-2021 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #ifndef RTC_GLOBAL_H
@@ -22,8 +12,8 @@
 #include "common.hpp"
 
 #include <chrono>
-#include <iostream>
 #include <future>
+#include <iostream>
 
 namespace rtc {
 
@@ -40,12 +30,6 @@ enum class LogLevel { // Don't change, it must match plog severity
 typedef std::function<void(LogLevel level, string message)> LogCallback;
 
 RTC_CPP_EXPORT void InitLogger(LogLevel level, LogCallback callback = nullptr);
-
-#ifdef PLOG_DEFAULT_INSTANCE_ID
-// Deprecated, kept for retro-compatibility
-[[deprecated]]
-RTC_CPP_EXPORT void InitLogger(plog::Severity severity, plog::IAppender *appender = nullptr);
-#endif
 
 RTC_CPP_EXPORT void Preload();
 RTC_CPP_EXPORT std::shared_future<void> Cleanup();
@@ -68,8 +52,8 @@ struct SctpSettings {
 
 RTC_CPP_EXPORT void SetSctpSettings(SctpSettings s);
 
-} // namespace rtc
+RTC_CPP_EXPORT std::ostream &operator<<(std::ostream &out, LogLevel level);
 
-RTC_CPP_EXPORT std::ostream &operator<<(std::ostream &out, rtc::LogLevel level);
+} // namespace rtc
 
 #endif

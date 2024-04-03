@@ -45,9 +45,9 @@ set_target_properties(streamer PROPERTIES
 	XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER com.github.paullouisageneau.libdatachannel.examples.streamer)
 
 find_package(Threads REQUIRED)
-target_link_libraries(streamer LibDataChannel::LibDataChannel Threads::Threads nlohmann_json)
+target_link_libraries(streamer LibDataChannel::LibDataChannel Threads::Threads nlohmann_json::nlohmann_json)
 
-if(WIN32)
+if(MSVC)
 	add_custom_command(TARGET streamer POST_BUILD
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different
 		"$<TARGET_FILE_DIR:datachannel>/datachannel.dll"

@@ -44,6 +44,7 @@ Cmdline::Cmdline (int argc, char *argv[]) // ISO C++17 not allowed: throw (std::
   static struct option long_options[] =
   {
     {"noStun", no_argument, NULL, 'n'},
+    {"udpMux", no_argument, NULL, 'm'},
     {"stunServer", required_argument, NULL, 's'},
     {"stunPort", required_argument, NULL, 't'},
     {"webSocketServer", required_argument, NULL, 'w'},
@@ -56,6 +57,7 @@ Cmdline::Cmdline (int argc, char *argv[]) // ISO C++17 not allowed: throw (std::
 
   /* default values */
   _n = false;
+  _m = false;
   _s = "stun.l.google.com";
   _t = 19302;
   _w = "localhost";
@@ -63,13 +65,17 @@ Cmdline::Cmdline (int argc, char *argv[]) // ISO C++17 not allowed: throw (std::
   _h = false;
 
   optind = 0;
-  while ((c = getopt_long (argc, argv, "s:t:w:x:enhv", long_options, &optind)) != - 1)
+  while ((c = getopt_long (argc, argv, "s:t:w:x:enmhv", long_options, &optind)) != - 1)
     {
       switch (c)
         {
         case 'n':
           _n = true;
           break;
+
+		case 'm':
+		  _m = true;
+		  break;
 
         case 's':
           _s = optarg;
@@ -145,13 +151,15 @@ libdatachannel client implementing WebRTC Data Channels with WebSocket signaling
    [ -n ] [ --noStun ] (type=FLAG)\n\
           Do NOT use a stun server (overrides -s and -t).\n\
    [ -s ] [ --stunServer ] (type=STRING, default=stun.l.google.com)\n\
-          Stun server URL or IP address.\n\
+          STUN server URL or IP address.\n\
    [ -t ] [ --stunPort ] (type=INTEGER, range=0...65535, default=19302)\n\
-          Stun server port.\n\
+          STUN server port.\n\
    [ -w ] [ --webSocketServer ] (type=STRING, default=localhost)\n\
           Web socket server URL or IP address.\n\
    [ -x ] [ --webSocketPort ] (type=INTEGER, range=0...65535, default=8000)\n\
           Web socket server port.\n\
+   [ -m ] [ --udpMux ] (type=FLAG)\n\
+          Use UDP multiplex.\n\
    [ -h ] [ --help ] (type=FLAG)\n\
           Display this help and exit.\n";
     }

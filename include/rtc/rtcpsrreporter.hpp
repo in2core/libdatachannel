@@ -1,70 +1,46 @@
 /**
  * Copyright (c) 2020 Filip Klembara (in2core)
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-#ifndef RTC_RTCP_SENDER_REPORTABLE_H
-#define RTC_RTCP_SENDER_REPORTABLE_H
+#ifndef RTC_RTCP_SR_REPORTER_H
+#define RTC_RTCP_SR_REPORTER_H
 
 #if RTC_ENABLE_MEDIA
 
-#include "mediahandlerelement.hpp"
-#include "message.hpp"
+#include "mediahandler.hpp"
 #include "rtppacketizationconfig.hpp"
+#include "rtp.hpp"
 
 namespace rtc {
 
-class RTC_CPP_EXPORT RtcpSrReporter final : public MediaHandlerElement {
-	bool needsToReport = false;
+class RTC_CPP_EXPORT RtcpSrReporter final : public MediaHandler {
+public:
+	RtcpSrReporter(shared_ptr<RtpPacketizationConfig> rtpConfig);
 
-	uint32_t packetCount = 0;
-	uint32_t payloadOctets = 0;
-	double timeOffset = 0;
+	uint32_t lastReportedTimestamp() const;
+	void setNeedsToReport();
 
-	uint32_t mPreviousReportedTimestamp = 0;
+	void outgoing(message_vector &messages, const message_callback &send) override;
 
+	// TODO: remove this
+	const shared_ptr<RtpPacketizationConfig> rtpConfig;
+
+private:
 	void addToReport(RtpHeader *rtp, uint32_t rtpSize);
 	message_ptr getSenderReport(uint32_t timestamp);
 
-public:
-	static uint64_t secondsToNTP(double seconds);
-
-	/// Timestamp of previous sender report
-	const uint32_t &previousReportedTimestamp = mPreviousReportedTimestamp;
-
-	/// RTP configuration
-	const shared_ptr<RtpPacketizationConfig> rtpConfig;
-
-	RtcpSrReporter(shared_ptr<RtpPacketizationConfig> rtpConfig);
-
-	ChainedOutgoingProduct processOutgoingBinaryMessage(ChainedMessagesProduct messages,
-	                                                    message_ptr control) override;
-
-	/// Set `needsToReport` flag. Sender report will be sent before next RTP packet with same
-	/// timestamp.
-	void setNeedsToReport();
-
-	/// Set offset to compute NTS for RTCP SR packets. Offset represents relation between real start
-	/// time and timestamp of the stream in RTP packets
-	/// @note `time_offset = rtpConfig->startTime - rtpConfig->timestampToSeconds(rtpConfig->timestamp)`
-	void startRecording();
+	uint32_t mPacketCount = 0;
+	uint32_t mPayloadOctets = 0;
+	uint32_t mLastReportedTimestamp = 0;
+	bool mNeedsToReport = false;
 };
 
 } // namespace rtc
 
 #endif /* RTC_ENABLE_MEDIA */
 
-#endif /* RTC_RTCP_SENDER_REPORTABLE_H */
+#endif /* RTC_RTCP_SR_REPORTER_H */

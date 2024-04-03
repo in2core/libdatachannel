@@ -4,7 +4,7 @@ save_as: index.html
 
 <div id="home">
 	<header>
-		<p>libdatachannel is an open-source software library implementing WebRTC Data Channels, WebRTC Media Transport, and WebSockets. It is written in C++17 and offers C bindings. The <a href="https://github.com/paullouisageneau/libdatachannel">source code</a> is available under LGPLv2, and the library is on <a href="https://aur.archlinux.org/packages/libdatachannel/">AUR</a>, <a href="https://github.com/Microsoft/vcpkg/tree/master/ports/libdatachannel">Vcpkg</a>, and <a href="https://github.com/Microsoft/vcpkg/tree/master/ports/libdatachannel">FreeBSD Ports</a>.</p>
+		<p>libdatachannel is an open-source software library implementing WebRTC Data Channels, WebRTC Media Transport, and WebSockets. It is written in C++17 and offers C bindings. The <a href="https://github.com/paullouisageneau/libdatachannel">source code</a> is available under MPL 2.0, and the library is on <a href="https://aur.archlinux.org/packages/libdatachannel/">AUR</a>, <a href="https://github.com/Microsoft/vcpkg/tree/master/ports/libdatachannel">Vcpkg</a>, and <a href="https://github.com/Microsoft/vcpkg/tree/master/ports/libdatachannel">FreeBSD Ports</a>.</p>
 		<div class="social">
 			<a href="https://github.com/paullouisageneau/libdatachannel"><img src="/images/icon_github.png" alt="GitHub"></a>
 			<a href="https://gitter.im/libdatachannel/community"><img src="/images/icon_gitter.png" alt="Gitter"></a>
@@ -25,7 +25,7 @@ save_as: index.html
 		<h3>Compatible</h3>
 		<ul>
 			<li>Compatible with browsers Firefox, Chromium, and Safari, and other WebRTC libraries (see <a href="https://github.com/sipsorcery/webrtc-echoes">webrtc-echoes</a>)</li>
-			<li>Licensed under <a href="https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html">LGPLv2</a>, meaning software with any license may link against the library</li>
+			<li>Licensed under <a href="https://www.mozilla.org/en-US/MPL/2.0/FAQ/">MPL 2.0</a>, meaning software with any license may use the library</li>
 			<li>Community-maintained bindings available for <a href="https://github.com/lerouxrgd/datachannel-rs">Rust</a>, <a href="https://github.com/murat-dogan/node-datachannel">Node.js</a>, and <a href="https://github.com/hanseuljun/datachannel-unity">Unity</a></li>
 		</ul>
 	</section>
@@ -33,13 +33,14 @@ save_as: index.html
 		<img src="/images/icon_portable.png">
 		<h3>Portable</h3>
 		<ul>
-			<li>Support for POSIX platforms (including GNU/Linux, Android, Apple macOS, and FreeBSD) and Microsoft Windows</li>
-			<li>Support for both <a href="https://www.openssl.org/">OpenSSL</a> and <a href="https://www.gnutls.org/">GnuTLS</a> as TLS backend
+			<li>Support for POSIX platforms (including GNU/Linux, Android, FreeBSD, Apple macOS and iOS) and Microsoft Windows</li>
+			<li>Support for <a href="https://www.gnutls.org/">GnuTLS</a>, <a href="https://www.trustedfirmware.org/projects/mbed-tls/">Mbed TLS</a>, or <a href="https://www.openssl.org/">OpenSSL</a> as TLS backend
 			<li>Code using Data Channels and WebSockets may be compiled as-is to WebAssembly for browsers with <a href="https://github.com/paullouisageneau/datachannel-wasm">datachannel-wasm</a></li>
 		</ul>
 	</section>
 	<div class="sponsor">
         <iframe src="https://github.com/sponsors/paullouisageneau/button" title="Sponsor paullouisageneau" height="35" width="116" style="border: 0;"></iframe>
         <div class="liberapay"><a href="https://liberapay.com/paullouisageneau/donate"><img alt="Donate using Liberapay" src="https://liberapay.com/assets/widgets/donate.svg"></a></div>
+        <div class="ko-fi"><a href='https://ko-fi.com/A0A8CIDHU' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://cdn.ko-fi.com/cdn/kofi3.png?v=3' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a></div>
 	</div>
 

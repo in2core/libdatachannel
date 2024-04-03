@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2019-2021 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #include "datachannel.hpp"
@@ -22,9 +12,11 @@
 #include "logcounter.hpp"
 #include "peerconnection.hpp"
 #include "sctptransport.hpp"
-
+#include "utils.hpp"
 #include "rtc/datachannel.hpp"
 #include "rtc/track.hpp"
+
+#include <algorithm>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -36,15 +28,17 @@ using std::chrono::milliseconds;
 
 namespace rtc::impl {
 
+using utils::to_uint16;
+using utils::to_uint32;
+
 // Messages for the DataChannel establishment protocol (RFC 8832)
-// See https://tools.ietf.org/html/rfc8832
+// See https://www.rfc-editor.org/rfc/rfc8832.html
 
 enum MessageType : uint8_t {
 	MESSAGE_OPEN_REQUEST = 0x00,
 	MESSAGE_OPEN_RESPONSE = 0x01,
 	MESSAGE_ACK = 0x02,
-	MESSAGE_OPEN = 0x03,
-	MESSAGE_CLOSE = 0x04
+	MESSAGE_OPEN = 0x03
 };
 
 enum ChannelType : uint8_t {
@@ -70,77 +64,70 @@ struct AckMessage {
 	uint8_t type = MESSAGE_ACK;
 };
 
-struct CloseMessage {
-	uint8_t type = MESSAGE_CLOSE;
-};
 #pragma pack(pop)
 
-LogCounter COUNTER_USERNEG_OPEN_MESSAGE(
-    plog::warning, "Number of open messages for a user-negotiated DataChannel received");
+bool DataChannel::IsOpenMessage(message_ptr message) {
+	if (message->type != Message::Control)
+		return false;
 
-DataChannel::DataChannel(weak_ptr<PeerConnection> pc, uint16_t stream, string label,
-                         string protocol, Reliability reliability)
-    : mPeerConnection(pc), mStream(stream), mLabel(std::move(label)),
-      mProtocol(std::move(protocol)),
-      mReliability(std::make_shared<Reliability>(std::move(reliability))),
-      mRecvQueue(RECV_QUEUE_LIMIT, message_size_func) {}
+	auto raw = reinterpret_cast<const uint8_t *>(message->data());
+	return !message->empty() && raw[0] == MESSAGE_OPEN;
+}
 
-DataChannel::~DataChannel() { close(); }
+DataChannel::DataChannel(weak_ptr<PeerConnection> pc, string label, string protocol,
+                         Reliability reliability)
+    : mPeerConnection(pc), mLabel(std::move(label)), mProtocol(std::move(protocol)),
+      mRecvQueue(RECV_QUEUE_LIMIT, message_size_func) {
+
+	if(reliability.maxPacketLifeTime && reliability.maxRetransmits)
+		throw std::invalid_argument("Both maxPacketLifeTime and maxRetransmits are set");
+
+    mReliability = std::make_shared<Reliability>(std::move(reliability));
+}
+
+DataChannel::~DataChannel() {
+	PLOG_VERBOSE << "Destroying DataChannel";
+	try {
+		close();
+	} catch (const std::exception &e) {
+		PLOG_ERROR << e.what();
+	}
+}
 
 void DataChannel::close() {
+	PLOG_VERBOSE << "Closing DataChannel";
+
 	shared_ptr<SctpTransport> transport;
 	{
 		std::shared_lock lock(mMutex);
 		transport = mSctpTransport.lock();
 	}
 
-	mIsClosed = true;
-	if (mIsOpen.exchange(false) && transport)
-		transport->closeStream(mStream);
+	if (!mIsClosed.exchange(true)) {
+		if (transport && mStream.has_value())
+			transport->closeStream(mStream.value());
+
+		triggerClosed();
+	}
 
 	resetCallbacks();
 }
 
-void DataChannel::remoteClose() {
-	if (!mIsClosed.exchange(true))
-		triggerClosed();
-
-	mIsOpen = false;
-}
+void DataChannel::remoteClose() { close(); }
 
 optional<message_variant> DataChannel::receive() {
-	while (auto next = mRecvQueue.tryPop()) {
-		message_ptr message = *next;
-		if (message->type != Message::Control)
-			return to_variant(std::move(*message));
-
-		auto raw = reinterpret_cast<const uint8_t *>(message->data());
-		if (!message->empty() && raw[0] == MESSAGE_CLOSE)
-			remoteClose();
-	}
-
-	return nullopt;
+	auto next = mRecvQueue.pop();
+	return next ? std::make_optional(to_variant(std::move(**next))) : nullopt;
 }
 
 optional<message_variant> DataChannel::peek() {
-	while (auto next = mRecvQueue.peek()) {
-		message_ptr message = *next;
-		if (message->type != Message::Control)
-			return to_variant(std::move(*message));
-
-		auto raw = reinterpret_cast<const uint8_t *>(message->data());
-		if (!message->empty() && raw[0] == MESSAGE_CLOSE)
-			remoteClose();
-
-		mRecvQueue.tryPop();
-	}
-
-	return nullopt;
+	auto next = mRecvQueue.peek();
+	return next ? std::make_optional(to_variant(**next)) : nullopt;
 }
 
 size_t DataChannel::availableAmount() const { return mRecvQueue.amount(); }
 
-uint16_t DataChannel::stream() const {
+optional<uint16_t> DataChannel::stream() const {
 	std::shared_lock lock(mMutex);
 	return mStream;
 }
@@ -160,19 +147,22 @@ Reliability DataChannel::reliability() const {
 	return *mReliability;
 }
 
-bool DataChannel::isOpen(void) const { return mIsOpen; }
+bool DataChannel::isOpen(void) const { return !mIsClosed && mIsOpen; }
 
 bool DataChannel::isClosed(void) const { return mIsClosed; }
 
 size_t DataChannel::maxMessageSize() const {
 	auto pc = mPeerConnection.lock();
-	return pc ? pc->remoteMaxMessageSize() : DEFAULT_MAX_MESSAGE_SIZE;
+	return pc ? pc->remoteMaxMessageSize() : DEFAULT_REMOTE_MAX_MESSAGE_SIZE;
 }
 
-void DataChannel::shiftStream() {
-	std::shared_lock lock(mMutex);
-	if (mStream % 2 == 1)
-		mStream -= 1;
+void DataChannel::assignStream(uint16_t stream) {
+	std::unique_lock lock(mMutex);
+
+	if (mStream.has_value())
+		throw std::logic_error("DataChannel already has a stream assigned");
+
+	mStream = stream;
 }
 
 void DataChannel::open(shared_ptr<SctpTransport> transport) {
@@ -181,13 +171,12 @@ void DataChannel::open(shared_ptr<SctpTransport> transport) {
 		mSctpTransport = transport;
 	}
 
-	if (!mIsOpen.exchange(true))
+	if (!mIsClosed && !mIsOpen.exchange(true))
 		triggerOpen();
 }
 
 void DataChannel::processOpenMessage(message_ptr) {
-	PLOG_DEBUG << "Received an open message for a user-negotiated DataChannel, ignoring";
-	COUNTER_USERNEG_OPEN_MESSAGE++;
+	PLOG_WARNING << "Received an open message for a user-negotiated DataChannel, ignoring";
 }
 
 bool DataChannel::outgoing(message_ptr message) {
@@ -199,19 +188,22 @@ bool DataChannel::outgoing(message_ptr message) {
 		if (!transport || mIsClosed)
 			throw std::runtime_error("DataChannel is closed");
 
+		if (!mStream.has_value())
+			throw std::logic_error("DataChannel has no stream assigned");
+
 		if (message->size() > maxMessageSize())
-			throw std::runtime_error("Message size exceeds limit");
+			throw std::invalid_argument("Message size exceeds limit");
 
 		// Before the ACK has been received on a DataChannel, all messages must be sent ordered
 		message->reliability = mIsOpen ? mReliability : nullptr;
-		message->stream = mStream;
+		message->stream = mStream.value();
 	}
 
 	return transport->send(message);
 }
 
 void DataChannel::incoming(message_ptr message) {
-	if (!message)
+	if (!message || mIsClosed)
 		return;
 
 	switch (message->type) {
@@ -228,17 +220,15 @@ void DataChannel::incoming(message_ptr message) {
 				triggerOpen();
 			}
 			break;
-		case MESSAGE_CLOSE:
-			// The close message will be processed in-order in receive()
-			mRecvQueue.push(message);
-			triggerAvailable(mRecvQueue.size());
-			break;
 		default:
 			// Ignore
 			break;
 		}
 		break;
 	}
+	case Message::Reset:
+		remoteClose();
+		break;
 	case Message::String:
 	case Message::Binary:
 		mRecvQueue.push(message);
@@ -250,40 +240,50 @@ void DataChannel::incoming(message_ptr message) {
 	}
 }
 
-NegotiatedDataChannel::NegotiatedDataChannel(weak_ptr<PeerConnection> pc, uint16_t stream,
-                                             string label, string protocol, Reliability reliability)
-    : DataChannel(pc, stream, std::move(label), std::move(protocol), std::move(reliability)) {}
+OutgoingDataChannel::OutgoingDataChannel(weak_ptr<PeerConnection> pc, string label, string protocol,
+                                         Reliability reliability)
+    : DataChannel(pc, std::move(label), std::move(protocol), std::move(reliability)) {}
 
-NegotiatedDataChannel::NegotiatedDataChannel(weak_ptr<PeerConnection> pc,
-                                             weak_ptr<SctpTransport> transport, uint16_t stream)
-    : DataChannel(pc, stream, "", "", {}) {
-	mSctpTransport = transport;
-}
+OutgoingDataChannel::~OutgoingDataChannel() {}
 
-NegotiatedDataChannel::~NegotiatedDataChannel() {}
-
-void NegotiatedDataChannel::open(shared_ptr<SctpTransport> transport) {
+void OutgoingDataChannel::open(shared_ptr<SctpTransport> transport) {
 	std::unique_lock lock(mMutex);
 	mSctpTransport = transport;
 
+	if (!mStream.has_value())
+		throw std::runtime_error("DataChannel has no stream assigned");
+
 	uint8_t channelType;
 	uint32_t reliabilityParameter;
-	switch (mReliability->type) {
-	case Reliability::Type::Rexmit:
-		channelType = CHANNEL_PARTIAL_RELIABLE_REXMIT;
-		reliabilityParameter = uint32_t(std::max(std::get<int>(mReliability->rexmit), 0));
-		break;
-
-	case Reliability::Type::Timed:
+	if (mReliability->maxPacketLifeTime) {
 		channelType = CHANNEL_PARTIAL_RELIABLE_TIMED;
-		reliabilityParameter = uint32_t(std::get<milliseconds>(mReliability->rexmit).count());
-		break;
-
-	default:
-		channelType = CHANNEL_RELIABLE;
-		reliabilityParameter = 0;
-		break;
+		reliabilityParameter = to_uint32(mReliability->maxPacketLifeTime->count());
+	} else if (mReliability->maxRetransmits) {
+		channelType = CHANNEL_PARTIAL_RELIABLE_REXMIT;
+		reliabilityParameter = to_uint32(*mReliability->maxRetransmits);
 	}
+	// else {
+	//	channelType = CHANNEL_RELIABLE;
+	//	reliabilityParameter = 0;
+	// }
+	// Deprecated
+	else
+		switch (mReliability->typeDeprecated) {
+		case Reliability::Type::Rexmit:
+			channelType = CHANNEL_PARTIAL_RELIABLE_REXMIT;
+			reliabilityParameter = to_uint32(std::max(std::get<int>(mReliability->rexmit), 0));
+			break;
+
+		case Reliability::Type::Timed:
+			channelType = CHANNEL_PARTIAL_RELIABLE_TIMED;
+			reliabilityParameter = to_uint32(std::get<milliseconds>(mReliability->rexmit).count());
+			break;
+
+		default:
+			channelType = CHANNEL_RELIABLE;
+			reliabilityParameter = 0;
+			break;
+		}
 
 	if (mReliability->unordered)
 		channelType |= 0x80;
@@ -295,8 +295,8 @@ void NegotiatedDataChannel::open(shared_ptr<SctpTransport> transport) {
 	open.channelType = channelType;
 	open.priority = htons(0);
 	open.reliabilityParameter = htonl(reliabilityParameter);
-	open.labelLength = htons(uint16_t(mLabel.size()));
-	open.protocolLength = htons(uint16_t(mProtocol.size()));
+	open.labelLength = htons(to_uint16(mLabel.size()));
+	open.protocolLength = htons(to_uint16(mProtocol.size()));
 
 	auto end = reinterpret_cast<char *>(buffer.data() + sizeof(OpenMessage));
 	std::copy(mLabel.begin(), mLabel.end(), end);
@@ -304,14 +304,34 @@ void NegotiatedDataChannel::open(shared_ptr<SctpTransport> transport) {
 
 	lock.unlock();
 
-	transport->send(make_message(buffer.begin(), buffer.end(), Message::Control, mStream));
+	transport->send(make_message(buffer.begin(), buffer.end(), Message::Control, mStream.value()));
 }
 
-void NegotiatedDataChannel::processOpenMessage(message_ptr message) {
+void OutgoingDataChannel::processOpenMessage(message_ptr) {
+	PLOG_WARNING << "Received an open message for a locally-created DataChannel, ignoring";
+}
+
+IncomingDataChannel::IncomingDataChannel(weak_ptr<PeerConnection> pc,
+                                         weak_ptr<SctpTransport> transport)
+    : DataChannel(pc, "", "", {}) {
+
+	mSctpTransport = transport;
+}
+
+IncomingDataChannel::~IncomingDataChannel() {}
+
+void IncomingDataChannel::open(shared_ptr<SctpTransport>) {
+	// Ignore
+}
+
+void IncomingDataChannel::processOpenMessage(message_ptr message) {
 	std::unique_lock lock(mMutex);
 	auto transport = mSctpTransport.lock();
 	if (!transport)
-		throw std::runtime_error("DataChannel has no transport");
+		throw std::logic_error("DataChannel has no transport");
+
+	if (!mStream.has_value())
+		throw std::logic_error("DataChannel has no stream assigned");
 
 	if (message->size() < sizeof(OpenMessage))
 		throw std::invalid_argument("DataChannel open message too small");
@@ -330,17 +350,31 @@ void NegotiatedDataChannel::processOpenMessage(message_ptr message) {
 	mProtocol.assign(end + open.labelLength, open.protocolLength);
 
 	mReliability->unordered = (open.channelType & 0x80) != 0;
+	mReliability->maxPacketLifeTime.reset();
+	mReliability->maxRetransmits.reset();
 	switch (open.channelType & 0x7F) {
 	case CHANNEL_PARTIAL_RELIABLE_REXMIT:
-		mReliability->type = Reliability::Type::Rexmit;
+		mReliability->maxRetransmits.emplace(open.reliabilityParameter);
+		break;
+	case CHANNEL_PARTIAL_RELIABLE_TIMED:
+		mReliability->maxPacketLifeTime.emplace(milliseconds(open.reliabilityParameter));
+		break;
+	default:
+		break;
+	}
+
+	// Deprecated
+	switch (open.channelType & 0x7F) {
+	case CHANNEL_PARTIAL_RELIABLE_REXMIT:
+		mReliability->typeDeprecated = Reliability::Type::Rexmit;
 		mReliability->rexmit = int(open.reliabilityParameter);
 		break;
 	case CHANNEL_PARTIAL_RELIABLE_TIMED:
-		mReliability->type = Reliability::Type::Timed;
+		mReliability->typeDeprecated = Reliability::Type::Timed;
 		mReliability->rexmit = milliseconds(open.reliabilityParameter);
 		break;
 	default:
-		mReliability->type = Reliability::Type::Reliable;
+		mReliability->typeDeprecated = Reliability::Type::Reliable;
 		mReliability->rexmit = int(0);
 	}
 
@@ -350,7 +384,7 @@ void NegotiatedDataChannel::processOpenMessage(message_ptr message) {
 	auto &ack = *reinterpret_cast<AckMessage *>(buffer.data());
 	ack.type = MESSAGE_ACK;
 
-	transport->send(make_message(buffer.begin(), buffer.end(), Message::Control, mStream));
+	transport->send(make_message(buffer.begin(), buffer.end(), Message::Control, mStream.value()));
 
 	if (!mIsOpen.exchange(true))
 		triggerOpen();

@@ -1,26 +1,15 @@
 /**
  * Copyright (c) 2020 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #ifndef RTC_IMPL_PROCESSOR_H
 #define RTC_IMPL_PROCESSOR_H
 
 #include "common.hpp"
-#include "init.hpp"
 #include "queue.hpp"
 #include "threadpool.hpp"
 
@@ -33,10 +22,10 @@
 namespace rtc::impl {
 
 // Processed tasks in order by delegating them to the thread pool
-class Processor final {
+class Processor {
 public:
 	Processor(size_t limit = 0);
-	~Processor();
+	virtual ~Processor();
 
 	Processor(const Processor &) = delete;
 	Processor &operator=(const Processor &) = delete;
@@ -45,13 +34,10 @@ public:
 
 	void join();
 
-	template <class F, class... Args> void enqueue(F &&f, Args &&...args);
+	template <class F, class... Args> void enqueue(F &&f, Args &&...args) noexcept;
 
-protected:
+private:
 	void schedule();
-
-	// Keep an init token
-	const init_token mInitToken = Init::Instance().token();
 
 	Queue<std::function<void()>> mTasks;
 	bool mPending = false; // true iff a task is pending in the thread pool
@@ -60,7 +46,16 @@ protected:
 	std::condition_variable mCondition;
 };
 
-template <class F, class... Args> void Processor::enqueue(F &&f, Args &&...args) {
+class TearDownProcessor final : public Processor {
+public:
+	static TearDownProcessor &Instance();
+
+private:
+	TearDownProcessor();
+	~TearDownProcessor();
+};
+
+template <class F, class... Args> void Processor::enqueue(F &&f, Args &&...args) noexcept {
 	std::unique_lock lock(mMutex);
 	auto bound = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
 	auto task = [this, bound = std::move(bound)]() mutable {

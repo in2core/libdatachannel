@@ -1,26 +1,18 @@
 /**
  * Copyright (c) 2019 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #include "sctptransport.hpp"
 #include "dtlstransport.hpp"
 #include "internals.hpp"
 #include "logcounter.hpp"
+#include "utils.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
@@ -34,7 +26,7 @@
 
 // RFC 8831: SCTP MUST support performing Path MTU discovery without relying on ICMP or ICMPv6 as
 // specified in [RFC4821] by using probing messages specified in [RFC4820].
-// See https://tools.ietf.org/html/rfc8831#section-5
+// See https://www.rfc-editor.org/rfc/rfc8831.html#section-5
 //
 // However, usrsctp does not implement Path MTU discovery, so we need to disable it for now.
 // See https://github.com/sctplab/usrsctp/issues/205
@@ -59,35 +51,13 @@
 using namespace std::chrono_literals;
 using namespace std::chrono;
 
-namespace {
-
-template <typename T> uint16_t to_uint16(T i) {
-	if (i >= 0 && static_cast<typename std::make_unsigned<T>::type>(i) <=
-	                  std::numeric_limits<uint16_t>::max())
-		return static_cast<uint16_t>(i);
-	else
-		throw std::invalid_argument("Integer out of range");
-}
-
-template <typename T> uint32_t to_uint32(T i) {
-	if (i >= 0 && static_cast<typename std::make_unsigned<T>::type>(i) <=
-	                  std::numeric_limits<uint32_t>::max())
-		return static_cast<uint32_t>(i);
-	else
-		throw std::invalid_argument("Integer out of range");
-}
-
-} // namespace
-
 namespace rtc::impl {
+
+using utils::to_uint16;
+using utils::to_uint32;
 
 static LogCounter COUNTER_UNKNOWN_PPID(plog::warning,
                                        "Number of SCTP packets received with an unknown PPID");
-static LogCounter
-    COUNTER_BAD_NOTIF_LEN(plog::warning,
-                          "Number of SCTP packets received with an bad notification length");
-static LogCounter COUNTER_BAD_SCTP_STATUS(plog::warning,
-                                          "Number of SCTP packets received with a bad status");
 
 class SctpTransport::InstancesSet {
 public:
@@ -102,7 +72,7 @@ public:
 	}
 
 	using shared_lock = std::shared_lock<std::shared_mutex>;
-	optional<shared_lock> lock(SctpTransport *instance) {
+	optional<shared_lock> lock(SctpTransport *instance) noexcept {
 		shared_lock lock(mMutex);
 		return mSet.find(instance) != mSet.end() ? std::make_optional(std::move(lock)) : nullopt;
 	}
@@ -116,9 +86,11 @@ SctpTransport::InstancesSet *SctpTransport::Instances = new InstancesSet;
 
 void SctpTransport::Init() {
 	usrsctp_init(0, SctpTransport::WriteCallback, SctpTransport::DebugCallback);
-	usrsctp_enable_crc32c_offload();       // We'll compute CRC32 only for outgoing packets
 	usrsctp_sysctl_set_sctp_pr_enable(1);  // Enable Partial Reliability Extension (RFC 3758)
 	usrsctp_sysctl_set_sctp_ecn_enable(0); // Disable Explicit Congestion Notification
+#ifndef SCTP_ACCEPT_ZERO_CHECKSUM
+	usrsctp_enable_crc32c_offload(); // We'll compute CRC32 only for outgoing packets
+#endif
 #ifdef SCTP_DEBUG
 	usrsctp_sysctl_set_sctp_debug_on(SCTP_DEBUG_ALL);
 #endif
@@ -174,22 +146,20 @@ void SctpTransport::SetSettings(const SctpSettings &s) {
 }
 
 void SctpTransport::Cleanup() {
-	while (usrsctp_finish() != 0)
+	while (usrsctp_finish())
 		std::this_thread::sleep_for(100ms);
 }
 
-SctpTransport::SctpTransport(shared_ptr<Transport> lower, const Configuration &config,
-                             uint16_t port, message_callback recvCallback,
-                             amount_callback bufferedAmountCallback,
+SctpTransport::SctpTransport(shared_ptr<Transport> lower, const Configuration &config, Ports ports,
+                             message_callback recvCallback, amount_callback bufferedAmountCallback,
                              state_callback stateChangeCallback)
-    : Transport(lower, std::move(stateChangeCallback)), mPort(port),
-      mSendQueue(0, message_size_func), mBufferedAmountCallback(std::move(bufferedAmountCallback)) {
+    : Transport(lower, std::move(stateChangeCallback)),
+      mMaxMessageSize(config.maxMessageSize.value_or(DEFAULT_LOCAL_MAX_MESSAGE_SIZE)),
+      mPorts(std::move(ports)), mSendQueue(0, message_size_func),
+      mBufferedAmountCallback(std::move(bufferedAmountCallback)) {
 	onRecv(std::move(recvCallback));
 
 	PLOG_DEBUG << "Initializing SCTP transport";
-
-	usrsctp_register_address(this);
-	Instances->insert(this);
 
 	mSock = usrsctp_socket(AF_CONN, SOCK_STREAM, IPPROTO_SCTP, nullptr, nullptr, 0, nullptr);
 	if (!mSock)
@@ -237,7 +207,7 @@ SctpTransport::SctpTransport(shared_ptr<Transport> lower, const Configuration &c
 
 	// RFC 8831 6.6. Transferring User Data on a Data Channel
 	// The sender SHOULD disable the Nagle algorithm (see [RFC1122) to minimize the latency
-	// See https://tools.ietf.org/html/rfc8831#section-6.6
+	// See https://www.rfc-editor.org/rfc/rfc8831.html#section-6.6
 	int nodelay = 1;
 	if (usrsctp_setsockopt(mSock, IPPROTO_SCTP, SCTP_NODELAY, &nodelay, sizeof(nodelay)))
 		throw std::runtime_error("Could not set socket option SCTP_NODELAY, errno=" +
@@ -254,7 +224,7 @@ SctpTransport::SctpTransport(shared_ptr<Transport> lower, const Configuration &c
 	// bit is not possible (for example, due to implementation restrictions), a safe value for the
 	// path MTU has to be used by the SCTP stack. It is RECOMMENDED that the safe value not exceed
 	// 1200 bytes.
-	// See https://tools.ietf.org/html/rfc8261#section-5
+	// See https://www.rfc-editor.org/rfc/rfc8261.html#section-5
 #if USE_PMTUD
 	if (!config.mtu.has_value()) {
 #else
@@ -281,10 +251,13 @@ SctpTransport::SctpTransport(shared_ptr<Transport> lower, const Configuration &c
 	// RFC 8831 6.2. SCTP Association Management
 	// The number of streams negotiated during SCTP association setup SHOULD be 65535, which is the
 	// maximum number of streams that can be negotiated during the association setup.
-	// See https://tools.ietf.org/html/rfc8831#section-6.2
+	// See https://www.rfc-editor.org/rfc/rfc8831.html#section-6.2
+	// However, usrsctp allocates tables to hold the stream states. For 65535 streams, it results in
+	// the waste of a few MBs for each association. Therefore, we use a lower limit to save memory.
+	// See https://github.com/sctplab/usrsctp/issues/121
 	struct sctp_initmsg sinit = {};
-	sinit.sinit_num_ostreams = 65535;
-	sinit.sinit_max_instreams = 65535;
+	sinit.sinit_num_ostreams = MAX_SCTP_STREAMS_COUNT;
+	sinit.sinit_max_instreams = MAX_SCTP_STREAMS_COUNT;
 	if (usrsctp_setsockopt(mSock, IPPROTO_SCTP, SCTP_INITMSG, &sinit, sizeof(sinit)))
 		throw std::runtime_error("Could not set socket option SCTP_INITMSG, errno=" +
 		                         std::to_string(errno));
@@ -296,6 +269,16 @@ SctpTransport::SctpTransport(shared_ptr<Transport> lower, const Configuration &c
 	if (usrsctp_setsockopt(mSock, IPPROTO_SCTP, SCTP_FRAGMENT_INTERLEAVE, &level, sizeof(level)))
 		throw std::runtime_error("Could not disable SCTP fragmented interleave, errno=" +
 		                         std::to_string(errno));
+
+#ifdef SCTP_ACCEPT_ZERO_CHECKSUM // not available in usrsctp v0.9.5.0
+	// When using SCTP over DTLS, the data integrity is ensured by DTLS. Therefore, there's no
+	// need to check CRC32c additionally when receiving. See
+	// https://datatracker.ietf.org/doc/html/draft-ietf-tsvwg-sctp-zero-checksum
+	int edmid = SCTP_EDMID_LOWER_LAYER_DTLS;
+	if (usrsctp_setsockopt(mSock, IPPROTO_SCTP, SCTP_ACCEPT_ZERO_CHECKSUM, &edmid, sizeof(edmid)))
+		throw std::runtime_error("Could set socket option SCTP_ACCEPT_ZERO_CHECKSUM, errno=" +
+		                         std::to_string(errno));
+#endif
 
 	int rcvBuf = 0;
 	socklen_t rcvBufLen = sizeof(rcvBuf);
@@ -309,8 +292,7 @@ SctpTransport::SctpTransport(shared_ptr<Transport> lower, const Configuration &c
 		                         std::to_string(errno));
 
 	// Ensure the buffer is also large enough to accomodate the largest messages
-	const size_t maxMessageSize = config.maxMessageSize.value_or(DEFAULT_LOCAL_MAX_MESSAGE_SIZE);
-	const int minBuf = int(std::min(maxMessageSize, size_t(std::numeric_limits<int>::max())));
+	const int minBuf = int(std::min(mMaxMessageSize, size_t(std::numeric_limits<int>::max())));
 	rcvBuf = std::max(rcvBuf, minBuf);
 	sndBuf = std::max(sndBuf, minBuf);
 
@@ -321,96 +303,81 @@ SctpTransport::SctpTransport(shared_ptr<Transport> lower, const Configuration &c
 	if (usrsctp_setsockopt(mSock, SOL_SOCKET, SO_SNDBUF, &sndBuf, sizeof(sndBuf)))
 		throw std::runtime_error("Could not set SCTP send buffer size, errno=" +
 		                         std::to_string(errno));
+
+	usrsctp_register_address(this);
+	Instances->insert(this);
 }
 
 SctpTransport::~SctpTransport() {
-	stop();
-	close();
+	PLOG_DEBUG << "Destroying SCTP transport";
+
+	mProcessor.join(); // if we are here, the processor must be empty
+
+	// Before unregistering incoming() from the lower layer, we need to make sure the thread from
+	// lower layers is not blocked in incoming() by the WrittenOnce condition.
+	mWrittenOnce = true;
+	mWrittenCondition.notify_all();
+
+	unregisterIncoming();
+
+	usrsctp_close(mSock);
 
 	usrsctp_deregister_address(this);
 	Instances->erase(this);
 }
 
-void SctpTransport::start() {
-	Transport::start();
+void SctpTransport::onBufferedAmount(amount_callback callback) {
+	mBufferedAmountCallback = std::move(callback);
+}
 
+void SctpTransport::start() {
 	registerIncoming();
 	connect();
 }
 
-bool SctpTransport::stop() {
-	// Transport::stop() will unregister incoming() from the lower layer, therefore we need to make
-	// sure the thread from lower layers is not blocked in incoming() by the WrittenOnce condition.
-	mWrittenOnce = true;
-	mWrittenCondition.notify_all();
+void SctpTransport::stop() { close(); }
 
-	if (!Transport::stop())
-		return false;
-
-	mSendQueue.stop();
-	flush();
-	shutdown();
-	return true;
-}
-
-void SctpTransport::close() {
-	if (mSock) {
-		mProcessor.join();
-		usrsctp_close(mSock);
-		mSock = nullptr;
-	}
-}
-
-void SctpTransport::connect() {
-	if (!mSock)
-		throw std::logic_error("Attempted SCTP connect with closed socket");
-
-	PLOG_DEBUG << "SCTP connecting";
-	changeState(State::Connecting);
-
+struct sockaddr_conn SctpTransport::getSockAddrConn(uint16_t port) {
 	struct sockaddr_conn sconn = {};
 	sconn.sconn_family = AF_CONN;
-	sconn.sconn_port = htons(mPort);
+	sconn.sconn_port = htons(port);
 	sconn.sconn_addr = this;
 #ifdef HAVE_SCONN_LEN
 	sconn.sconn_len = sizeof(sconn);
 #endif
+	return sconn;
+}
 
-	if (usrsctp_bind(mSock, reinterpret_cast<struct sockaddr *>(&sconn), sizeof(sconn)))
+void SctpTransport::connect() {
+	PLOG_DEBUG << "SCTP connecting (local port=" << mPorts.local
+	           << ", remote port=" << mPorts.remote << ")";
+	changeState(State::Connecting);
+
+	auto local = getSockAddrConn(mPorts.local);
+	if (usrsctp_bind(mSock, reinterpret_cast<struct sockaddr *>(&local), sizeof(local)))
 		throw std::runtime_error("Could not bind usrsctp socket, errno=" + std::to_string(errno));
 
 	// According to RFC 8841, both endpoints must initiate the SCTP association, in a
 	// simultaneous-open manner, irrelevent to the SDP setup role.
-	// See https://tools.ietf.org/html/rfc8841#section-9.3
-	int ret = usrsctp_connect(mSock, reinterpret_cast<struct sockaddr *>(&sconn), sizeof(sconn));
+	// See https://www.rfc-editor.org/rfc/rfc8841.html#section-9.3
+	auto remote = getSockAddrConn(mPorts.remote);
+	int ret = usrsctp_connect(mSock, reinterpret_cast<struct sockaddr *>(&remote), sizeof(remote));
 	if (ret && errno != EINPROGRESS)
 		throw std::runtime_error("Connection attempt failed, errno=" + std::to_string(errno));
 }
 
-void SctpTransport::shutdown() {
-	if (!mSock)
-		return;
-
-	PLOG_DEBUG << "SCTP shutdown";
-
-	if (usrsctp_shutdown(mSock, SHUT_RDWR) != 0 && errno != ENOTCONN) {
-		PLOG_WARNING << "SCTP shutdown failed, errno=" << errno;
-	}
-
-	close();
-
-	PLOG_INFO << "SCTP disconnected";
-	changeState(State::Disconnected);
-	mWrittenCondition.notify_all();
-}
-
 bool SctpTransport::send(message_ptr message) {
 	std::lock_guard lock(mSendMutex);
+	if (state() != State::Connected)
+		return false;
 
 	if (!message)
 		return trySendQueue();
 
 	PLOG_VERBOSE << "Send size=" << message->size();
+
+	if (message->size() > mMaxMessageSize)
+		throw std::invalid_argument("Message is too large");
 
 	// Flush the queue, and if nothing is pending, try to send directly
 	if (trySendQueue() && trySendMessage(message))
@@ -424,6 +391,9 @@ bool SctpTransport::send(message_ptr message) {
 bool SctpTransport::flush() {
 	try {
 		std::lock_guard lock(mSendMutex);
+		if (state() != State::Connected)
+			return false;
+
 		trySendQueue();
 		return true;
 
@@ -436,9 +406,36 @@ bool SctpTransport::flush() {
 void SctpTransport::closeStream(unsigned int stream) {
 	std::lock_guard lock(mSendMutex);
 
-	// This method must not call the buffered callback synchronously
+	// RFC 8831 6.7. Closing a Data Channel
+	// Closing of a data channel MUST be signaled by resetting the corresponding outgoing streams
+	// See https://www.rfc-editor.org/rfc/rfc8831.html#section-6.7
 	mSendQueue.push(make_message(0, Message::Reset, to_uint16(stream)));
-	mProcessor.enqueue(&SctpTransport::flush, this);
+
+	// This method must not call the buffered callback synchronously
+	mProcessor.enqueue(&SctpTransport::flush, shared_from_this());
+}
+
+void SctpTransport::close() {
+	mSendQueue.stop();
+	if (state() == State::Connected) {
+		mProcessor.enqueue(&SctpTransport::flush, shared_from_this());
+	} else if (state() == State::Connecting) {
+		PLOG_DEBUG << "SCTP early shutdown";
+		if (usrsctp_shutdown(mSock, SHUT_RDWR)) {
+			if (errno == ENOTCONN) {
+				PLOG_VERBOSE << "SCTP already shut down";
+			} else {
+				PLOG_WARNING << "SCTP shutdown failed, errno=" << errno;
+			}
+		}
+		changeState(State::Failed);
+		mWrittenCondition.notify_all();
+	}
+}
+
+unsigned int SctpTransport::maxStream() const {
+	unsigned int streamsCount = mNegotiatedStreamsCount.value_or(MAX_SCTP_STREAMS_COUNT);
+	return streamsCount > 0 ? streamsCount - 1 : 0;
 }
 
 void SctpTransport::incoming(message_ptr message) {
@@ -447,8 +444,11 @@ void SctpTransport::incoming(message_ptr message) {
 	// to be sent on our side (i.e. the local INIT) before proceeding.
 	if (!mWrittenOnce) { // test the atomic boolean is not set first to prevent a lock contention
 		std::unique_lock lock(mWriteMutex);
-		mWrittenCondition.wait(lock, [&]() { return mWrittenOnce.load(); });
+		mWrittenCondition.wait(lock, [&]() { return mWrittenOnce || state() == State::Failed; });
 	}
+
+	if (state() == State::Failed)
+		return;
 
 	if (!message) {
 		PLOG_INFO << "SCTP disconnected";
@@ -464,7 +464,7 @@ void SctpTransport::incoming(message_ptr message) {
 
 bool SctpTransport::outgoing(message_ptr message) {
 	// Set recommended medium-priority DSCP value
-	// See https://datatracker.ietf.org/doc/html/rfc8837#section-5
+	// See https://www.rfc-editor.org/rfc/rfc8837.html#section-5
 	message->dscp = 10; // AF11: Assured Forwarding class 1, low drop probability
 	return Transport::outgoing(std::move(message));
 }
@@ -488,6 +488,8 @@ void SctpTransport::doRecv() {
 					break;
 				else
 					throw std::runtime_error("SCTP recv failed, errno=" + std::to_string(errno));
+			} else if (len == 0) {
+				break;
 			}
 
 			PLOG_VERBOSE << "SCTP recv, len=" << len;
@@ -497,24 +499,31 @@ void SctpTransport::doRecv() {
 			if (flags & MSG_NOTIFICATION) {
 				// SCTP event notification
 				mPartialNotification.insert(mPartialNotification.end(), buffer, buffer + len);
+
 				if (flags & MSG_EOR) {
 					// Notification is complete, process it
-					auto notification =
-					    reinterpret_cast<union sctp_notification *>(mPartialNotification.data());
-					processNotification(notification, mPartialNotification.size());
-					mPartialNotification.clear();
+					binary notification;
+					mPartialNotification.swap(notification);
+					auto n = reinterpret_cast<union sctp_notification *>(notification.data());
+					processNotification(n, notification.size());
 				}
+
 			} else {
 				// SCTP message
 				mPartialMessage.insert(mPartialMessage.end(), buffer, buffer + len);
+				if (mPartialMessage.size() > mMaxMessageSize) {
+					PLOG_WARNING << "SCTP message is too large, truncating it";
+					mPartialMessage.resize(mMaxMessageSize);
+				}
+
 				if (flags & MSG_EOR) {
 					// Message is complete, process it
+					binary message;
+					mPartialMessage.swap(message);
 					if (infotype != SCTP_RECVV_RCVINFO)
 						throw std::runtime_error("Missing SCTP recv info");
 
-					processData(std::move(mPartialMessage), info.rcv_sid,
-					            PayloadId(ntohl(info.rcv_ppid)));
-					mPartialMessage.clear();
+					processData(std::move(message), info.rcv_sid, PayloadId(ntohl(info.rcv_ppid)));
 				}
 			}
 		}
@@ -533,6 +542,28 @@ void SctpTransport::doFlush() {
 	}
 }
 
+void SctpTransport::enqueueRecv() {
+	if (mPendingRecvCount > 0)
+		return;
+
+	if (auto shared_this = weak_from_this().lock()) {
+		// This is called from the upcall callback, we must not release the shared ptr here
+		++mPendingRecvCount;
+		mProcessor.enqueue(&SctpTransport::doRecv, std::move(shared_this));
+	}
+}
+
+void SctpTransport::enqueueFlush() {
+	if (mPendingFlushCount > 0)
+		return;
+
+	if (auto shared_this = weak_from_this().lock()) {
+		// This is called from the upcall callback, we must not release the shared ptr here
+		++mPendingFlushCount;
+		mProcessor.enqueue(&SctpTransport::doFlush, std::move(shared_this));
+	}
+}
+
 bool SctpTransport::trySendQueue() {
 	// Requires mSendMutex to be locked
 	while (auto next = mSendQueue.peek()) {
@@ -543,12 +574,26 @@ bool SctpTransport::trySendQueue() {
 		mSendQueue.pop();
 		updateBufferedAmount(to_uint16(message->stream), -ptrdiff_t(message_size_func(message)));
 	}
+
+	if (!mSendQueue.running() && !std::exchange(mSendShutdown, true)) {
+		PLOG_DEBUG << "SCTP shutdown";
+		if (usrsctp_shutdown(mSock, SHUT_WR)) {
+			if (errno == ENOTCONN) {
+				PLOG_VERBOSE << "SCTP already shut down";
+			} else {
+				PLOG_WARNING << "SCTP shutdown failed, errno=" << errno;
+				changeState(State::Disconnected);
+				recv(nullptr);
+			}
+		}
+	}
+
 	return true;
 }
 
 bool SctpTransport::trySendMessage(message_ptr message) {
 	// Requires mSendMutex to be locked
-	if (!mSock || state() != State::Connected)
+	if (state() != State::Connected)
 		return false;
 
 	uint32_t ppid;
@@ -573,7 +618,7 @@ bool SctpTransport::trySendMessage(message_ptr message) {
 	PLOG_VERBOSE << "SCTP try send size=" << message->size();
 
 	// TODO: Implement SCTP ndata specification draft when supported everywhere
-	// See https://tools.ietf.org/html/draft-ietf-tsvwg-sctp-ndata-08
+	// See https://datatracker.ietf.org/doc/html/draft-ietf-tsvwg-sctp-ndata-08
 
 	const Reliability reliability = message->reliability ? *message->reliability : Reliability();
 
@@ -590,7 +635,20 @@ bool SctpTransport::trySendMessage(message_ptr message) {
 	if (reliability.unordered)
 		spa.sendv_sndinfo.snd_flags |= SCTP_UNORDERED;
 
-	switch (reliability.type) {
+	if (reliability.maxPacketLifeTime) {
+		spa.sendv_flags |= SCTP_SEND_PRINFO_VALID;
+		spa.sendv_prinfo.pr_policy = SCTP_PR_SCTP_TTL;
+		spa.sendv_prinfo.pr_value = to_uint32(reliability.maxPacketLifeTime->count());
+	} else if (reliability.maxRetransmits) {
+		spa.sendv_flags |= SCTP_SEND_PRINFO_VALID;
+		spa.sendv_prinfo.pr_policy = SCTP_PR_SCTP_RTX;
+		spa.sendv_prinfo.pr_value = to_uint32(*reliability.maxRetransmits);
+	}
+	// else {
+	// 	spa.sendv_prinfo.pr_policy = SCTP_PR_SCTP_NONE;
+	// }
+	// Deprecated
+	else switch (reliability.typeDeprecated) {
 	case Reliability::Type::Rexmit:
 		spa.sendv_flags |= SCTP_SEND_PRINFO_VALID;
 		spa.sendv_prinfo.pr_policy = SCTP_PR_SCTP_RTX;
@@ -658,7 +716,7 @@ void SctpTransport::triggerBufferedAmount(uint16_t streamId, size_t amount) {
 
 void SctpTransport::sendReset(uint16_t streamId) {
 	// Requires mSendMutex to be locked
-	if (!mSock || state() != State::Connected)
+	if (state() != State::Connected)
 		return;
 
 	PLOG_DEBUG << "SCTP resetting stream " << streamId;
@@ -683,26 +741,25 @@ void SctpTransport::sendReset(uint16_t streamId) {
 	}
 }
 
-void SctpTransport::handleUpcall() {
-	if (!mSock)
-		return;
+void SctpTransport::handleUpcall() noexcept {
+	try {
+		PLOG_VERBOSE << "Handle upcall";
 
-	PLOG_VERBOSE << "Handle upcall";
+		int events = usrsctp_get_events(mSock);
 
-	int events = usrsctp_get_events(mSock);
+		if (events & SCTP_EVENT_READ)
+			enqueueRecv();
 
-	if (events & SCTP_EVENT_READ && mPendingRecvCount == 0) {
-		++mPendingRecvCount;
-		mProcessor.enqueue(&SctpTransport::doRecv, this);
-	}
+		if (events & SCTP_EVENT_WRITE)
+			enqueueFlush();
 
-	if (events & SCTP_EVENT_WRITE && mPendingFlushCount == 0) {
-		++mPendingFlushCount;
-		mProcessor.enqueue(&SctpTransport::doFlush, this);
+	} catch (const std::exception &e) {
+		PLOG_ERROR << "SCTP upcall: " << e.what();
 	}
 }
 
-int SctpTransport::handleWrite(byte *data, size_t len, uint8_t /*tos*/, uint8_t /*set_df*/) {
+int SctpTransport::handleWrite(byte *data, size_t len, uint8_t /*tos*/,
+                               uint8_t /*set_df*/) noexcept {
 	try {
 		std::unique_lock lock(mWriteMutex);
 		PLOG_VERBOSE << "Handle write, len=" << len;
@@ -727,7 +784,7 @@ void SctpTransport::processData(binary &&data, uint16_t sid, PayloadId ppid) {
 	// RFC 8831: The usage of the PPIDs "WebRTC String Partial" and "WebRTC Binary Partial" is
 	// deprecated. They were used for a PPID-based fragmentation and reassembly of user messages
 	// belonging to reliable and ordered data channels.
-	// See https://tools.ietf.org/html/rfc8831#section-6.6
+	// See https://www.rfc-editor.org/rfc/rfc8831.html#section-6.6
 	// We handle those PPIDs at reception for compatibility reasons but shall never send them.
 	switch (ppid) {
 	case PPID_CONTROL:
@@ -736,6 +793,7 @@ void SctpTransport::processData(binary &&data, uint16_t sid, PayloadId ppid) {
 
 	case PPID_STRING_PARTIAL: // deprecated
 		mPartialStringData.insert(mPartialStringData.end(), data.begin(), data.end());
+		mPartialStringData.resize(mMaxMessageSize);
 		break;
 
 	case PPID_STRING:
@@ -744,9 +802,11 @@ void SctpTransport::processData(binary &&data, uint16_t sid, PayloadId ppid) {
 			recv(make_message(std::move(data), Message::String, sid));
 		} else {
 			mPartialStringData.insert(mPartialStringData.end(), data.begin(), data.end());
+			mPartialStringData.resize(mMaxMessageSize);
 			mBytesReceived += mPartialStringData.size();
-			recv(make_message(std::move(mPartialStringData), Message::String, sid));
+			auto message = make_message(std::move(mPartialStringData), Message::String, sid);
 			mPartialStringData.clear();
+			recv(std::move(message));
 		}
 		break;
 
@@ -757,6 +817,7 @@ void SctpTransport::processData(binary &&data, uint16_t sid, PayloadId ppid) {
 
 	case PPID_BINARY_PARTIAL: // deprecated
 		mPartialBinaryData.insert(mPartialBinaryData.end(), data.begin(), data.end());
+		mPartialBinaryData.resize(mMaxMessageSize);
 		break;
 
 	case PPID_BINARY:
@@ -765,9 +826,11 @@ void SctpTransport::processData(binary &&data, uint16_t sid, PayloadId ppid) {
 			recv(make_message(std::move(data), Message::Binary, sid));
 		} else {
 			mPartialBinaryData.insert(mPartialBinaryData.end(), data.begin(), data.end());
+			mPartialBinaryData.resize(mMaxMessageSize);
 			mBytesReceived += mPartialBinaryData.size();
-			recv(make_message(std::move(mPartialBinaryData), Message::Binary, sid));
+			auto message = make_message(std::move(mPartialBinaryData), Message::Binary, sid);
 			mPartialBinaryData.clear();
+			recv(std::move(message));
 		}
 		break;
 
@@ -786,7 +849,8 @@ void SctpTransport::processData(binary &&data, uint16_t sid, PayloadId ppid) {
 
 void SctpTransport::processNotification(const union sctp_notification *notify, size_t len) {
 	if (len != size_t(notify->sn_header.sn_length)) {
-		COUNTER_BAD_NOTIF_LEN++;
+		PLOG_WARNING << "Unexpected notification length, expected=" << notify->sn_header.sn_length
+		             << ", actual=" << len;
 		return;
 	}
 
@@ -795,17 +859,24 @@ void SctpTransport::processNotification(const union sctp_notification *notify, s
 
 	switch (type) {
 	case SCTP_ASSOC_CHANGE: {
-		const struct sctp_assoc_change &assoc_change = notify->sn_assoc_change;
-		if (assoc_change.sac_state == SCTP_COMM_UP) {
+		PLOG_VERBOSE << "SCTP association change event";
+		const struct sctp_assoc_change &sac = notify->sn_assoc_change;
+		if (sac.sac_state == SCTP_COMM_UP) {
+			PLOG_DEBUG << "SCTP negotiated streams: incoming=" << sac.sac_inbound_streams
+			           << ", outgoing=" << sac.sac_outbound_streams;
+			mNegotiatedStreamsCount.emplace(
+			    std::min(sac.sac_inbound_streams, sac.sac_outbound_streams));
+
 			PLOG_INFO << "SCTP connected";
 			changeState(State::Connected);
 		} else {
-			if (state() == State::Connecting) {
-				PLOG_ERROR << "SCTP connection failed";
-				changeState(State::Failed);
-			} else {
+			if (state() == State::Connected) {
 				PLOG_INFO << "SCTP disconnected";
 				changeState(State::Disconnected);
+				recv(nullptr);
+			} else {
+				PLOG_ERROR << "SCTP connection failed";
+				changeState(State::Failed);
 			}
 			mWrittenCondition.notify_all();
 		}
@@ -813,7 +884,7 @@ void SctpTransport::processNotification(const union sctp_notification *notify, s
 	}
 
 	case SCTP_SENDER_DRY_EVENT: {
-		PLOG_VERBOSE << "SCTP dry event";
+		PLOG_VERBOSE << "SCTP sender dry event";
 		// It should not be necessary since the send callback should have been called already,
 		// but to be sure, let's try to send now.
 		flush();
@@ -847,18 +918,15 @@ void SctpTransport::processNotification(const union sctp_notification *notify, s
 			PLOG_VERBOSE << "SCTP reset event, " << desc.str();
 		}
 
-		if (flags & SCTP_STREAM_RESET_OUTGOING_SSN) {
-			for (int i = 0; i < count; ++i) {
-				uint16_t streamId = reset_event.strreset_stream_list[i];
-				closeStream(streamId);
-			}
-		}
+		// RFC 8831 6.7. Closing a Data Channel
+		// If one side decides to close the data channel, it resets the corresponding outgoing
+		// stream. When the peer sees that an incoming stream was reset, it also resets its
+		// corresponding outgoing stream.
+		// See https://www.rfc-editor.org/rfc/rfc8831.html#section-6.7
 		if (flags & SCTP_STREAM_RESET_INCOMING_SSN) {
-			const byte dataChannelCloseMessage{0x04};
 			for (int i = 0; i < count; ++i) {
 				uint16_t streamId = reset_event.strreset_stream_list[i];
-				recv(make_message(&dataChannelCloseMessage, &dataChannelCloseMessage + 1,
-				                  Message::Control, streamId));
+				recv(make_message(0, Message::Reset, streamId));
 			}
 		}
 		break;
@@ -880,16 +948,14 @@ size_t SctpTransport::bytesSent() { return mBytesSent; }
 size_t SctpTransport::bytesReceived() { return mBytesReceived; }
 
 optional<milliseconds> SctpTransport::rtt() {
-	if (!mSock || state() != State::Connected)
+	if (state() != State::Connected)
 		return nullopt;
 
 	struct sctp_status status = {};
 	socklen_t len = sizeof(status);
-	if (usrsctp_getsockopt(mSock, IPPROTO_SCTP, SCTP_STATUS, &status, &len)) {
-		COUNTER_BAD_SCTP_STATUS++;
-
+	if (usrsctp_getsockopt(mSock, IPPROTO_SCTP, SCTP_STATUS, &status, &len))
 		return nullopt;
-	}
+
 	return milliseconds(status.sstat_primary.spinfo_srtt);
 }
 
@@ -903,12 +969,14 @@ void SctpTransport::UpcallCallback(struct socket *, void *arg, int /* flags */) 
 int SctpTransport::WriteCallback(void *ptr, void *data, size_t len, uint8_t tos, uint8_t set_df) {
 	auto *transport = static_cast<SctpTransport *>(ptr);
 
+#ifndef SCTP_ACCEPT_ZERO_CHECKSUM
 	// Set the CRC32 ourselves as we have enabled CRC32 offloading
 	if (len >= 12) {
 		uint32_t *checksum = reinterpret_cast<uint32_t *>(data) + 2;
 		*checksum = 0;
 		*checksum = usrsctp_crc32c(data, len);
 	}
+#endif
 
 	// Workaround for sctplab/usrsctp#405: Send callback is invoked on already closed socket
 	// https://github.com/sctplab/usrsctp/issues/405

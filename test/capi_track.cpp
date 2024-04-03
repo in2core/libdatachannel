@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2020 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #include <rtc/rtc.h>
@@ -41,7 +31,8 @@ static Peer *peer1 = NULL;
 static Peer *peer2 = NULL;
 
 static const char *mediaDescription = "video 9 UDP/TLS/RTP/SAVPF\r\n"
-                                      "a=mid:video\r\n";
+                                      "a=mid:video\r\n"
+                                      "a=sendonly\r\n";
 
 static void RTC_API descriptionCallback(int pc, const char *sdp, const char *type, void *ptr) {
 	Peer *peer = (Peer *)ptr;
@@ -78,27 +69,53 @@ static void RTC_API openCallback(int id, void *ptr) {
 static void RTC_API closedCallback(int id, void *ptr) {
 	Peer *peer = (Peer *)ptr;
 	peer->connected = false;
+	printf("Track %d: Closed\n", peer == peer1 ? 1 : 2);
 }
 
 static void RTC_API trackCallback(int pc, int tr, void *ptr) {
 	Peer *peer = (Peer *)ptr;
+
+	char buffer[1024];
+	if (rtcGetTrackDescription(tr, buffer, 1024) < 0) {
+		fprintf(stderr, "rtcGetTrackDescription failed\n");
+		return;
+	}
+
+	printf("Track %d: Received with media description: \n%s\n", peer == peer1 ? 1 : 2, buffer);
+
+	char mid[256];
+	if (rtcGetTrackMid(tr, mid, 256) < 0 || strcmp(mid, "video") != 0) {
+		fprintf(stderr, "rtcGetTrackMid failed\n");
+		return;
+	}
+
+	// Description is reversed here
+	rtcDirection direction;
+	if (rtcGetTrackDirection(tr, &direction) < 0 || direction != RTC_DIRECTION_RECVONLY) {
+		fprintf(stderr, "rtcGetTrackDirection failed\n");
+		return;
+	}
+
 	peer->tr = tr;
 	rtcSetOpenCallback(tr, openCallback);
 	rtcSetClosedCallback(tr, closedCallback);
-
-	char buffer[1024];
-	if (rtcGetTrackDescription(tr, buffer, 1024) >= 0)
-		printf("Track %d: Received with media description: \n%s\n", peer == peer1 ? 1 : 2, buffer);
 }
 
 static Peer *createPeer(const rtcConfiguration *config) {
 	Peer *peer = (Peer *)malloc(sizeof(Peer));
 	if (!peer)
 		return nullptr;
+
 	memset(peer, 0, sizeof(Peer));
 
 	// Create peer connection
 	peer->pc = rtcCreatePeerConnection(config);
+	if (peer->pc < 0) {
+		fprintf(stderr, "PeerConnection creation failed\n");
+		free(peer);
+		return nullptr;
+	}
+
 	rtcSetUserPointer(peer->pc, peer);
 	rtcSetTrackCallback(peer->pc, trackCallback);
 	rtcSetLocalDescriptionCallback(peer->pc, descriptionCallback);
@@ -106,15 +123,18 @@ static Peer *createPeer(const rtcConfiguration *config) {
 	rtcSetStateChangeCallback(peer->pc, stateChangeCallback);
 	rtcSetGatheringStateChangeCallback(peer->pc, gatheringStateCallback);
 
+	peer->tr = -1;
 	return peer;
 }
 
 static void deletePeer(Peer *peer) {
 	if (peer) {
-		if (peer->tr)
+		if (peer->tr >= 0)
 			rtcDeleteTrack(peer->tr);
-		if (peer->pc)
+
+		if (peer->pc >= 0)
 			rtcDeletePeerConnection(peer->pc);
+
 		free(peer);
 	}
 }
@@ -154,6 +174,18 @@ int test_capi_track_main() {
 	peer1->tr = rtcAddTrack(peer1->pc, mediaDescription);
 	rtcSetOpenCallback(peer1->tr, openCallback);
 	rtcSetClosedCallback(peer1->tr, closedCallback);
+
+	char mid[256];
+	if (rtcGetTrackMid(peer1->tr, mid, 256) < 0 || strcmp(mid, "video") != 0) {
+		fprintf(stderr, "rtcGetTrackMid failed\n");
+		goto error;
+	}
+
+	rtcDirection direction;
+	if (rtcGetTrackDirection(peer1->tr, &direction) < 0 || direction != RTC_DIRECTION_SENDONLY) {
+		fprintf(stderr, "rtcGetTrackDirection failed\n");
+		goto error;
+	}
 
 	// Initiate the handshake
 	rtcSetLocalDescription(peer1->pc, NULL);

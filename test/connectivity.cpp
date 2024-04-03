@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2019 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #include "rtc/rtc.hpp"
@@ -31,13 +21,12 @@ using namespace std;
 
 template <class T> weak_ptr<T> make_weak_ptr(shared_ptr<T> ptr) { return ptr; }
 
-void test_connectivity() {
+void test_connectivity(bool signal_wrong_fingerprint) {
 	InitLogger(LogLevel::Debug);
 
 	Configuration config1;
 	// STUN server example (not necessary to connect locally)
-	// Please do not use outside of libdatachannel tests
-	config1.iceServers.emplace_back("stun:stun.ageneau.net:3478");
+	config1.iceServers.emplace_back("stun:stun.l.google.com:19302");
 	// Custom MTU example
 	config1.mtu = 1500;
 	// Custom max message size
@@ -47,8 +36,7 @@ void test_connectivity() {
 
 	Configuration config2;
 	// STUN server example (not necessary to connect locally)
-	// Please do not use outside of libdatachannel tests
-	config2.iceServers.emplace_back("stun:stun.ageneau.net:3478");
+	config2.iceServers.emplace_back("stun:stun.l.google.com:19302");
 	// Custom MTU example
 	config2.mtu = 1500;
 	// Custom max message size
@@ -59,8 +47,16 @@ void test_connectivity() {
 
 	PeerConnection pc2(config2);
 
-	pc1.onLocalDescription([&pc2](Description sdp) {
+	pc1.onLocalDescription([&pc2, signal_wrong_fingerprint](Description sdp) {
 		cout << "Description 1: " << sdp << endl;
+		if (signal_wrong_fingerprint) {
+			auto f = sdp.fingerprint();
+			if (f.has_value()) {
+				auto& c = f.value().value[0];
+				if (c == 'F' || c == 'f') c = '0'; else c++;
+				sdp.setFingerprint(f.value());
+			}
+		}
 		pc2.setRemoteDescription(string(sdp));
 	});
 
@@ -70,6 +66,10 @@ void test_connectivity() {
 	});
 
 	pc1.onStateChange([](PeerConnection::State state) { cout << "State 1: " << state << endl; });
+
+	pc1.onIceStateChange([](PeerConnection::IceState state) {
+		cout << "ICE state 1: " << state << endl;
+	});
 
 	pc1.onGatheringStateChange([](PeerConnection::GatheringState state) {
 		cout << "Gathering state 1: " << state << endl;
@@ -91,6 +91,10 @@ void test_connectivity() {
 
 	pc2.onStateChange([](PeerConnection::State state) { cout << "State 2: " << state << endl; });
 
+	pc2.onIceStateChange([](PeerConnection::IceState state) {
+		cout << "ICE state 2: " << state << endl;
+	});
+
 	pc2.onGatheringStateChange([](PeerConnection::GatheringState state) {
 		cout << "Gathering state 2: " << state << endl;
 	});
@@ -102,15 +106,15 @@ void test_connectivity() {
 	shared_ptr<DataChannel> dc2;
 	pc2.onDataChannel([&dc2](shared_ptr<DataChannel> dc) {
 		cout << "DataChannel 2: Received with label \"" << dc->label() << "\"" << endl;
-		if (dc->label() != "test") {
-			cerr << "Wrong DataChannel label" << endl;
-			return;
-		}
 
 		dc->onOpen([wdc = make_weak_ptr(dc)]() {
-			if (auto dc = wdc.lock())
+			if (auto dc = wdc.lock()) {
+				cout << "DataChannel 2: Open" << endl;
 				dc->send("Hello from 2");
+			}
 		});
+
+		dc->onClosed([]() { cout << "DataChannel 2: Closed" << endl; });
 
 		dc->onMessage([](variant<binary, string> message) {
 			if (holds_alternative<string>(message)) {
@@ -123,12 +127,17 @@ void test_connectivity() {
 
 	auto dc1 = pc1.createDataChannel("test");
 
+	if (dc1->id().has_value())
+		throw std::runtime_error("DataChannel stream id assigned before connection");
+
 	dc1->onOpen([wdc1 = make_weak_ptr(dc1)]() {
 		if (auto dc1 = wdc1.lock()) {
 			cout << "DataChannel 1: Open" << endl;
 			dc1->send("Hello from 1");
 		}
 	});
+
+	dc1->onClosed([]() { cout << "DataChannel 1: Closed" << endl; });
 
 	dc1->onMessage([](const variant<binary, string> &message) {
 		if (holds_alternative<string>(message)) {
@@ -142,15 +151,31 @@ void test_connectivity() {
 	while ((!(adc2 = std::atomic_load(&dc2)) || !adc2->isOpen() || !dc1->isOpen()) && attempts--)
 		this_thread::sleep_for(1s);
 
-	if (pc1.state() != PeerConnection::State::Connected &&
+	if (pc1.state() != PeerConnection::State::Connected ||
 	    pc2.state() != PeerConnection::State::Connected)
 		throw runtime_error("PeerConnection is not connected");
+
+	if ((pc1.iceState() != PeerConnection::IceState::Connected &&
+	     pc1.iceState() != PeerConnection::IceState::Completed) ||
+	    (pc2.iceState() != PeerConnection::IceState::Connected &&
+	     pc2.iceState() != PeerConnection::IceState::Completed))
+		throw runtime_error("ICE is not connected");
 
 	if (!adc2 || !adc2->isOpen() || !dc1->isOpen())
 		throw runtime_error("DataChannel is not open");
 
-	if (dc1->maxMessageSize() != CUSTOM_MAX_MESSAGE_SIZE || dc2->maxMessageSize() != CUSTOM_MAX_MESSAGE_SIZE)
+	if (adc2->label() != "test")
+		throw runtime_error("Wrong DataChannel label");
+
+	if (dc1->maxMessageSize() != CUSTOM_MAX_MESSAGE_SIZE ||
+	    dc2->maxMessageSize() != CUSTOM_MAX_MESSAGE_SIZE)
 		throw runtime_error("DataChannel max message size is incorrect");
+
+	if (!dc1->id().has_value())
+		throw runtime_error("DataChannel stream id is not assigned");
+
+	if (dc1->id().value() != adc2->id().value())
+		throw runtime_error("DataChannel stream ids do not match");
 
 	if (auto addr = pc1.localAddress())
 		cout << "Local address 1:  " << *addr << endl;
@@ -175,10 +200,6 @@ void test_connectivity() {
 	shared_ptr<DataChannel> second2;
 	pc2.onDataChannel([&second2](shared_ptr<DataChannel> dc) {
 		cout << "Second DataChannel 2: Received with label \"" << dc->label() << "\"" << endl;
-		if (dc->label() != "second") {
-			cerr << "Wrong second DataChannel label" << endl;
-			return;
-		}
 
 		dc->onOpen([wdc = make_weak_ptr(dc)]() {
 			if (auto dc = wdc.lock())
@@ -195,13 +216,20 @@ void test_connectivity() {
 	});
 
 	auto second1 = pc1.createDataChannel("second");
-	second1->onOpen([wsecond1 = make_weak_ptr(dc1)]() {
+
+	if (!second1->id().has_value())
+		throw std::runtime_error("Second DataChannel stream id is not assigned");
+
+	second1->onOpen([wsecond1 = make_weak_ptr(second1)]() {
 		if (auto second1 = wsecond1.lock()) {
 			cout << "Second DataChannel 1: Open" << endl;
 			second1->send("Second hello from 1");
 		}
 	});
-	dc1->onMessage([](const variant<binary, string> &message) {
+
+	second1->onClosed([]() { cout << "Second DataChannel 1: Closed" << endl; });
+
+	second1->onMessage([](const variant<binary, string> &message) {
 		if (holds_alternative<string>(message)) {
 			cout << "Second Message 1: " << get<string>(message) << endl;
 		}
@@ -218,33 +246,14 @@ void test_connectivity() {
 	if (!asecond2 || !asecond2->isOpen() || !second1->isOpen())
 		throw runtime_error("Second DataChannel is not open");
 
-	// Try to open a negotiated channel
-	DataChannelInit init;
-	init.negotiated = true;
-	init.id = 42;
-	auto negotiated1 = pc1.createDataChannel("negotiated", init);
-	auto negotiated2 = pc2.createDataChannel("negoctated", init);
+	if (asecond2->label() != "second")
+		throw runtime_error("Wrong second DataChannel label");
 
-	if (!negotiated1->isOpen() || !negotiated2->isOpen())
-		throw runtime_error("Negotiated DataChannel is not open");
+	if (!second2->id().has_value() || !asecond2->id().has_value())
+		throw runtime_error("Second DataChannel stream id is not assigned");
 
-	std::atomic<bool> received = false;
-	negotiated2->onMessage([&received](const variant<binary, string> &message) {
-		if (holds_alternative<string>(message)) {
-			cout << "Second Message 2: " << get<string>(message) << endl;
-			received = true;
-		}
-	});
-
-	negotiated1->send("Hello from negotiated channel");
-
-	// Wait a bit
-	attempts = 5;
-	while (!received && attempts--)
-		this_thread::sleep_for(1s);
-
-	if (!received)
-		throw runtime_error("Negotiated DataChannel failed");
+	if (second2->id().value() != asecond2->id().value())
+		throw runtime_error("Second DataChannel stream ids do not match");
 
 	// Delay close of peer 2 to check closing works properly
 	pc1.close();

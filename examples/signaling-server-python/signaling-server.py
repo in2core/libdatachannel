@@ -3,18 +3,9 @@
 # Python signaling server example for libdatachannel
 # Copyright (c) 2020 Paul-Louis Ageneau
 #
-# This program is free software; you can redistribute it and/or
-# modify it under the terms of the GNU General Public License
-# as published by the Free Software Foundation; either version 2
-# of the License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; If not, see <http://www.gnu.org/licenses/>.
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import sys
 import ssl
@@ -62,7 +53,8 @@ async def handle_websocket(websocket, path):
             del clients[client_id]
             print('Client {} disconnected'.format(client_id))
 
-if __name__ == '__main__':
+
+async def main():
     # Usage: ./server.py [[host:]port] [SSL certificate file]
     endpoint_or_port = sys.argv[1] if len(sys.argv) > 1 else "8000"
     ssl_cert = sys.argv[2] if len(sys.argv) > 2 else None
@@ -77,6 +69,10 @@ if __name__ == '__main__':
 
     print('Listening on {}'.format(endpoint))
     host, port = endpoint.rsplit(':', 1)
-    start_server = websockets.serve(handle_websocket, host, int(port), ssl=ssl_context)
-    asyncio.get_event_loop().run_until_complete(start_server)
-    asyncio.get_event_loop().run_forever()
+
+    server = await websockets.serve(handle_websocket, host, int(port), ssl=ssl_context)
+    await server.wait_closed()
+
+
+if __name__ == '__main__':
+    asyncio.run(main())

@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2020 Filip Klembara (in2core)
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #if RTC_ENABLE_MEDIA
@@ -38,13 +28,13 @@ NalUnitFragmentA::NalUnitFragmentA(FragmentType type, bool forbiddenBit, uint8_t
 }
 
 std::vector<shared_ptr<NalUnitFragmentA>>
-NalUnitFragmentA::fragmentsFrom(shared_ptr<NalUnit> nalu, uint16_t maximumFragmentSize) {
-	assert(nalu->size() > maximumFragmentSize);
-	auto fragments_count = ceil(double(nalu->size()) / maximumFragmentSize);
-	maximumFragmentSize = uint16_t(int(ceil(nalu->size() / fragments_count)));
+NalUnitFragmentA::fragmentsFrom(shared_ptr<NalUnit> nalu, uint16_t maxFragmentSize) {
+	assert(nalu->size() > maxFragmentSize);
+	auto fragments_count = ceil(double(nalu->size()) / maxFragmentSize);
+	maxFragmentSize = uint16_t(int(ceil(nalu->size() / fragments_count)));
 
 	// 2 bytes for FU indicator and FU header
-	maximumFragmentSize -= 2;
+	maxFragmentSize -= 2;
 	auto f = nalu->forbiddenBit();
 	uint8_t nri = nalu->nri() & 0x03;
 	uint8_t naluType = nalu->unitType() & 0x1F;
@@ -56,19 +46,19 @@ NalUnitFragmentA::fragmentsFrom(shared_ptr<NalUnit> nalu, uint16_t maximumFragme
 		FragmentType fragmentType;
 		if (offset == 0) {
 			fragmentType = FragmentType::Start;
-		} else if (offset + maximumFragmentSize < payload.size()) {
+		} else if (offset + maxFragmentSize < payload.size()) {
 			fragmentType = FragmentType::Middle;
 		} else {
-			if (offset + maximumFragmentSize > payload.size()) {
-				maximumFragmentSize = uint16_t(payload.size() - offset);
+			if (offset + maxFragmentSize > payload.size()) {
+				maxFragmentSize = uint16_t(payload.size() - offset);
 			}
 			fragmentType = FragmentType::End;
 		}
-		fragmentData = {payload.begin() + offset, payload.begin() + offset + maximumFragmentSize};
+		fragmentData = {payload.begin() + offset, payload.begin() + offset + maxFragmentSize};
 		auto fragment =
 		    std::make_shared<NalUnitFragmentA>(fragmentType, f, nri, naluType, fragmentData);
 		result.push_back(fragment);
-		offset += maximumFragmentSize;
+		offset += maxFragmentSize;
 	}
 	return result;
 }
@@ -90,12 +80,12 @@ void NalUnitFragmentA::setFragmentType(FragmentType type) {
 	}
 }
 
-std::vector<shared_ptr<binary>> NalUnits::generateFragments(uint16_t maximumFragmentSize) {
+std::vector<shared_ptr<binary>> NalUnits::generateFragments(uint16_t maxFragmentSize) {
 	vector<shared_ptr<binary>> result{};
 	for (auto nalu : *this) {
-		if (nalu->size() > maximumFragmentSize) {
+		if (nalu->size() > maxFragmentSize) {
 			std::vector<shared_ptr<NalUnitFragmentA>> fragments =
-			    NalUnitFragmentA::fragmentsFrom(nalu, maximumFragmentSize);
+			    NalUnitFragmentA::fragmentsFrom(nalu, maxFragmentSize);
 			result.insert(result.end(), fragments.begin(), fragments.end());
 		} else {
 			result.push_back(nalu);

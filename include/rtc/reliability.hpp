@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2019 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #ifndef RTC_RELIABILITY_H
@@ -26,10 +16,25 @@
 namespace rtc {
 
 struct Reliability {
-	enum class Type { Reliable = 0, Rexmit, Timed };
-
-	Type type = Type::Reliable;
+	// It true, the channel does not enforce message ordering and out-of-order delivery is allowed
 	bool unordered = false;
+
+	// If both maxPacketLifeTime or maxRetransmits are unset, the channel is reliable.
+	// If either maxPacketLifeTime or maxRetransmits is set, the channel is unreliable.
+	// (The settings are exclusive so both maxPacketLifetime and maxRetransmits must not be set.)
+
+	// Time window during which transmissions and retransmissions may occur
+	optional<std::chrono::milliseconds> maxPacketLifeTime;
+
+	// Maximum number of retransmissions that are attempted
+	optional<unsigned int> maxRetransmits;
+
+	// For backward compatibility, do not use
+	enum class Type { Reliable = 0, Rexmit, Timed };
+	union {
+		Type typeDeprecated = Type::Reliable;
+		[[deprecated("Use maxPacketLifeTime or maxRetransmits")]] Type type;
+	};
 	variant<int, std::chrono::milliseconds> rexmit = 0;
 };
 

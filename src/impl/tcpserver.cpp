@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2021 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #include "tcpserver.hpp"
@@ -31,9 +21,9 @@
 
 namespace rtc::impl {
 
-TcpServer::TcpServer(uint16_t port) {
+TcpServer::TcpServer(uint16_t port, const char *bindAddress) {
 	PLOG_DEBUG << "Initializing TCP server";
-	listen(port);
+	listen(port, bindAddress);
 }
 
 TcpServer::~TcpServer() { close(); }
@@ -46,9 +36,10 @@ shared_ptr<TcpTransport> TcpServer::accept() {
 			break;
 
 		struct pollfd pfd[2];
-		pfd[0].fd = mSock;
-		pfd[0].events = POLLIN;
-		mInterrupter.prepare(pfd[1]);
+		mInterrupter.prepare(pfd[0]);
+		pfd[1].fd = mSock;
+		pfd[1].events = POLLIN;
+
 		lock.unlock();
 		int ret = ::poll(pfd, 2, -1);
 		lock.lock();
@@ -63,11 +54,13 @@ shared_ptr<TcpTransport> TcpServer::accept() {
 				throw std::runtime_error("Failed to wait for socket connection");
 		}
 
-		if (pfd[0].revents & POLLNVAL || pfd[0].revents & POLLERR) {
+		mInterrupter.process(pfd[0]);
+
+		if (pfd[1].revents & POLLNVAL || pfd[1].revents & POLLERR) {
 			throw std::runtime_error("Error while waiting for socket connection");
 		}
 
-		if (pfd[0].revents & POLLIN) {
+		if (pfd[1].revents & POLLIN) {
 			struct sockaddr_storage addr;
 			socklen_t addrlen = sizeof(addr);
 			socket_t incomingSock = ::accept(mSock, (struct sockaddr *)&addr, &addrlen);
@@ -96,7 +89,7 @@ void TcpServer::close() {
 	}
 }
 
-void TcpServer::listen(uint16_t port) {
+void TcpServer::listen(uint16_t port, const char *bindAddress) {
 	PLOG_DEBUG << "Listening on port " << port;
 
 	struct addrinfo hints = {};
@@ -106,7 +99,7 @@ void TcpServer::listen(uint16_t port) {
 	hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV;
 
 	struct addrinfo *result = nullptr;
-	if (::getaddrinfo(nullptr, std::to_string(port).c_str(), &hints, &result))
+	if (getaddrinfo(bindAddress, std::to_string(port).c_str(), &hints, &result))
 		throw std::runtime_error("Resolution failed for local address");
 
 	try {
@@ -130,15 +123,21 @@ void TcpServer::listen(uint16_t port) {
 		if (mSock == INVALID_SOCKET)
 			throw std::runtime_error("TCP server socket creation failed");
 
-		// Listen on both IPv6 and IPv4
+		const sockopt_t enabled = 1;
 		const sockopt_t disabled = 0;
+
+		// Enable REUSEADDR
+		::setsockopt(mSock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&enabled),
+		             sizeof(enabled));
+
+		// Listen on both IPv6 and IPv4
 		if (ai->ai_family == AF_INET6)
 			::setsockopt(mSock, IPPROTO_IPV6, IPV6_V6ONLY,
 			             reinterpret_cast<const char *>(&disabled), sizeof(disabled));
 
 		// Set non-blocking
-		ctl_t b = 1;
-		if (::ioctlsocket(mSock, FIONBIO, &b) < 0)
+		ctl_t nbio = 1;
+		if (::ioctlsocket(mSock, FIONBIO, &nbio) < 0)
 			throw std::runtime_error("Failed to set socket non-blocking mode");
 
 		// Bind socket

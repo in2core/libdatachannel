@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2020 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #include <rtc/rtc.h>
@@ -33,6 +23,7 @@ static void sleep(unsigned int secs) { Sleep(secs * 1000); }
 
 typedef struct {
 	rtcState state;
+	rtcIceState iceState;
 	rtcGatheringState gatheringState;
 	rtcSignalingState signalingState;
 	int pc;
@@ -61,6 +52,12 @@ static void RTC_API stateChangeCallback(int pc, rtcState state, void *ptr) {
 	Peer *peer = (Peer *)ptr;
 	peer->state = state;
 	printf("State %d: %d\n", peer == peer1 ? 1 : 2, (int)state);
+}
+
+static void RTC_API iceStateChangeCallback(int pc, rtcIceState state, void *ptr) {
+	Peer *peer = (Peer *)ptr;
+	peer->iceState = state;
+	printf("ICE state %d: %d\n", peer == peer1 ? 1 : 2, (int)state);
 }
 
 static void RTC_API gatheringStateCallback(int pc, rtcGatheringState state, void *ptr) {
@@ -97,6 +94,7 @@ static void RTC_API openCallback(int id, void *ptr) {
 static void RTC_API closedCallback(int id, void *ptr) {
 	Peer *peer = (Peer *)ptr;
 	peer->connected = false;
+	printf("DataChannel %d: Closed\n", peer == peer1 ? 1 : 2);
 }
 
 static void RTC_API messageCallback(int id, const char *message, int size, void *ptr) {
@@ -152,9 +150,6 @@ static void RTC_API dataChannelCallback(int pc, int dc, void *ptr) {
 	rtcSetMessageCallback(dc, messageCallback);
 
 	peer->dc = dc;
-
-	const char *message = peer == peer1 ? "Hello from 1" : "Hello from 2";
-	rtcSendMessage(peer->dc, message, -1); // negative size indicates a null-terminated string
 }
 
 static Peer *createPeer(const rtcConfiguration *config) {
@@ -170,6 +165,7 @@ static Peer *createPeer(const rtcConfiguration *config) {
 	rtcSetLocalDescriptionCallback(peer->pc, descriptionCallback);
 	rtcSetLocalCandidateCallback(peer->pc, candidateCallback);
 	rtcSetStateChangeCallback(peer->pc, stateChangeCallback);
+	rtcSetIceStateChangeCallback(peer->pc, iceStateChangeCallback);
 	rtcSetGatheringStateChangeCallback(peer->pc, gatheringStateCallback);
 	rtcSetSignalingStateChangeCallback(peer->pc, signalingStateCallback);
 
@@ -188,6 +184,11 @@ static void deletePeer(Peer *peer) {
 
 int test_capi_connectivity_main() {
 	int attempts;
+	char buffer[BUFFER_SIZE];
+	char buffer2[BUFFER_SIZE];
+	const char *test = "foo";
+	const int testLen = 3;
+	int size = 0;
 
 	rtcInitLogger(RTC_LOG_DEBUG, nullptr);
 
@@ -202,8 +203,7 @@ int test_capi_connectivity_main() {
 	}
 
 	// STUN server example (not necessary to connect locally)
-	// Please do not use outside of libdatachannel tests
-	const char *iceServers[1] = {"stun:stun.ageneau.net:3478"};
+	const char *iceServers[1] = {"stun:stun.l.google.com:19302"};
 
 	// Create peer 1
 	rtcConfiguration config1;
@@ -254,13 +254,16 @@ int test_capi_connectivity_main() {
 		goto error;
 	}
 
+	if ((peer1->iceState != RTC_ICE_CONNECTED && peer1->iceState != RTC_ICE_COMPLETED) ||
+	    (peer2->iceState != RTC_ICE_CONNECTED && peer2->iceState != RTC_ICE_COMPLETED)) {
+		fprintf(stderr, "PeerConnection is not connected\n");
+		goto error;
+	}
+
 	if (!peer1->connected || !peer2->connected) {
 		fprintf(stderr, "DataChannel is not connected\n");
 		goto error;
 	}
-
-	char buffer[BUFFER_SIZE];
-	char buffer2[BUFFER_SIZE];
 
 	if (rtcGetLocalDescriptionType(peer1->pc, buffer, BUFFER_SIZE) < 0) {
 		fprintf(stderr, "rtcGetLocalDescriptionType failed\n");
@@ -347,6 +350,31 @@ int test_capi_connectivity_main() {
 	}
 	printf("Local candidate 2:  %s\n", buffer);
 	printf("Remote candidate 2: %s\n", buffer2);
+
+	if (rtcGetMaxDataChannelStream(peer1->pc) <= 0 || rtcGetMaxDataChannelStream(peer2->pc) <= 0) {
+		fprintf(stderr, "rtcGetMaxDataChannelStream failed\n");
+		goto error;
+	}
+
+	rtcSetMessageCallback(peer2->dc, NULL);
+	if (rtcSendMessage(peer1->dc, test, testLen) < 0) {
+		fprintf(stderr, "rtcSendMessage failed\n");
+		goto error;
+	}
+	sleep(1);
+	size = 0;
+	if (rtcReceiveMessage(peer2->dc, NULL, &size) < 0 || size != testLen) {
+		fprintf(stderr, "rtcReceiveMessage failed to peek message size\n");
+		goto error;
+	}
+	if (rtcReceiveMessage(peer2->dc, buffer, &size) < 0 || size != testLen) {
+		fprintf(stderr, "rtcReceiveMessage failed to get the message\n");
+		goto error;
+	}
+
+	rtcClose(peer1->dc); // optional
+
+	rtcClosePeerConnection(peer1->pc); // optional
 
 	deletePeer(peer1);
 	sleep(1);

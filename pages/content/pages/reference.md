@@ -57,7 +57,6 @@ An optional call to `rtcCleanup` unloads the global resources used by the librar
 
 Warning: This function requires all Peer Connections, Data Channels, Tracks, and WebSockets to be destroyed before returning, meaning all callbacks must return before this function returns. Therefore, it must never be called from a callback.
 
-
 #### rtcSetUserPointer
 
 ```
@@ -81,11 +80,14 @@ int rtcCreatePeerConnection(const rtcConfiguration *config)
 typedef struct {
 	const char **iceServers;
 	int iceServersCount;
+	const char *proxyServer;
 	const char *bindAddress;
 	rtcCertificateType certificateType;
 	rtcTransportPolicy iceTransportPolicy;
 	bool enableIceTcp;
+	bool enableIceUdpMux;
 	bool disableAutoNegotiation;
+	bool forceMediaTransport;
 	uint16_t portRangeBegin;
 	uint16_t portRangeEnd;
 	int mtu;
@@ -98,15 +100,18 @@ Creates a Peer Connection.
 Arguments:
 
 - `config`: the configuration structure, containing:
-  - `iceServers` (optional): an array of pointers on null-terminated ice server URIs (NULL if unused)
+  - `iceServers` (optional): an array of pointers on null-terminated ICE server URIs (NULL if unused)
   - `iceServersCount` (optional): number of URLs in the array pointed by `iceServers` (0 if unused)
+  - `proxyServer` (optional): if non-NULL, specifies the proxy server URI to use for TURN relaying (ignored with libjuice as ICE backend)
   - `bindAddress` (optional): if non-NULL, bind only to the given local address (ignored with libnice as ICE backend)
   - `certificateType` (optional): certificate type, either `RTC_CERTIFICATE_ECDSA` or `RTC_CERTIFICATE_RSA` (0 or `RTC_CERTIFICATE_DEFAULT` if default)
   - `iceTransportPolicy` (optional): ICE transport policy, if set to `RTC_TRANSPORT_POLICY_RELAY`, the PeerConnection will emit only relayed candidates (0 or `RTC_TRANSPORT_POLICY_ALL` if default)
   - `enableIceTcp`: if true, generate TCP candidates for ICE (ignored with libjuice as ICE backend)
+  - `enableIceUdpMux`: if true, connections are multiplexed on the same UDP port (should be combined with `portRangeBegin` and `portRangeEnd`, ignored with libnice as ICE backend)
   - `disableAutoNegotiation`: if true, the user is responsible for calling `rtcSetLocalDescription` after creating a Data Channel and after setting the remote description
+  - `forceMediaTransport`: if true, the connection allocates the SRTP media transport even if no tracks are present (necessary to add tracks during later renegotiation)
   - `portRangeBegin` (optional): first port (included) of the allowed local port range (0 if unused)
-  - `portRangeEnd` (optional): last port (included) of the allowed local port (0 if unused)
+  - `portRangeEnd` (optional): last port (included) of the allowed local port range (0 if unused)
   - `mtu` (optional): manually set the Maximum Transfer Unit (MTU) for the connection (0 if automatic)
   - `maxMessageSize` (optional): manually set the local maximum message size for Data Channels (0 if default)
 
@@ -114,15 +119,19 @@ Return value: the identifier of the new Peer Connection or a negative error code
 
 The Peer Connection must be deleted with `rtcDeletePeerConnection`.
 
-The format of each entry in `iceServers` must match the format `[("stun"|"turn"|"turns") ":"][login ":" password "@"]hostname[":" port]["?transport=" ("udp"|"tcp"|"tls")]`. The default scheme is STUN, the default port is 3478 (5349 over TLS), and the default transport is UDP.  For instance, a STUN server URI could be `mystunserver.org`, and a TURN server URI could be `turn:myuser:12345678@turnserver.org`. Note transports TCP and TLS are only available for a TURN server with libnice as ICE backend and govern only the TURN control connection, meaning relaying is always performed over UDP.
+Each entry in `iceServers` must match the format `[("stun"|"turn"|"turns") (":"|"://")][username ":" password "@"]hostname[":" port]["?transport=" ("udp"|"tcp"|"tls")]`. The default scheme is STUN, the default port is 3478 (5349 over TLS), and the default transport is UDP. For instance, a STUN server URI could be `mystunserver.org`, and a TURN server URI could be `turn:myuser:12345678@turnserver.org`. Note transports TCP and TLS are only available for a TURN server with libnice as ICE backend and govern only the TURN control connection, meaning relaying is always performed over UDP.
 
-#### rtcDeletePeerConnection
+The `proxyServer` URI, if present, must match the format `[("http"|"socks5") (":"|"://")][username ":" password "@"]hostname["    :" port]`. The default scheme is HTTP, and the default port is 3128 for HTTP or 1080 for SOCKS5.
+
+If the username or password of an URI contains reserved special characters, they must be percent-encoded. In particular, ":" must be encoded as "%3A" and "@" must by encoded as "%40".
+
+#### rtcClosePeerConnection
 
 ```
-int rtcDeletePeerConnection(int pc)
+int rtcClosePeerConnection(int pc)
 ```
 
-Deletes the specified Peer Connection.
+Closes the Peer Connection.
 
 Arguments:
 
@@ -130,7 +139,21 @@ Arguments:
 
 Return value: `RTC_ERR_SUCCESS` or a negative error code
 
-After this function has been called, `pc` must not be used in a function call anymore. This function will block until all scheduled callbacks of `pc` return (except the one this function might be called in) and no other callback will be called for `pc` after it returns.
+#### rtcDeletePeerConnection
+
+```
+int rtcDeletePeerConnection(int pc)
+```
+
+Deletes the Peer Connection.
+
+Arguments:
+
+- `pc`: the Peer Connection identifier
+
+Return value: `RTC_ERR_SUCCESS` or a negative error code
+
+If it is not already closed, the Peer Connection is implicitly closed before being deleted. After this function has been called, `pc` must not be used in a function call anymore. This function will block until all scheduled callbacks of `pc` return (except the one this function might be called in) and no other callback will be called for `pc` after it returns.
 
 #### rtcSetXCallback
 
@@ -301,7 +324,7 @@ If `buffer` is `NULL`, the description is not copied but the size is still retur
 int rtcGetLocalAddress(int pc, char *buffer, int size)
 ```
 
-Retrieves the current local address, i.e. the network address of the currently selected local candidate. The address will have the format `"IP_ADDRESS:PORT"`, where `IP_ADDRESS` may be either IPv4 or IPv6. The call might fail if the PeerConnection is not in state `RTC_CONNECTED`, and the address might change if the state is not `RTC_COMPLETED`.
+Retrieves the current local address, i.e. the network address of the currently selected local candidate. The address will have the format `"IP_ADDRESS:PORT"`, where `IP_ADDRESS` may be either IPv4 or IPv6. The call might fail if the PeerConnection is not in state `RTC_CONNECTED`, and the address might change after connection.
 
 Arguments:
 
@@ -319,7 +342,7 @@ If `buffer` is `NULL`, the address is not copied but the size is still returned.
 int rtcGetRemoteAddress(int pc, char *buffer, int size)
 ```
 
-Retrieves the current remote address, i.e. the network address of the currently selected remote candidate. The address will have the format `"IP_ADDRESS:PORT"`, where `IP_ADDRESS` may be either IPv4 or IPv6. The call may fail if the state is not `RTC_CONNECTED`, and the address might change if the state is not `RTC_COMPLETED`.
+Retrieves the current remote address, i.e. the network address of the currently selected remote candidate. The address will have the format `"IP_ADDRESS:PORT"`, where `IP_ADDRESS` may be either IPv4 or IPv6. The call may fail if the state is not `RTC_CONNECTED`, and the address might change after connection.
 
 Arguments:
 
@@ -337,7 +360,7 @@ If `buffer` is `NULL`, the address is not copied but the size is still returned.
 int rtcGetSelectedCandidatePair(int pc, char *local, int localSize, char *remote, int remoteSize)
 ```
 
-Retrieve the currently selected candidate pair. The call may fail if the state is not `RTC_CONNECTED`, and the selected candidate pair might change if the state is not `RTC_COMPLETED`.
+Retrieves the currently selected candidate pair. The call may fail if the state is not `RTC_CONNECTED`, and the selected candidate pair might change after connection.
 
 Arguments:
 
@@ -350,6 +373,32 @@ Arguments:
 Return value: the maximun length of strings copied in buffers (including the terminating null character) or a negative error code
 
 If `local`, `remote`, or both, are `NULL`, the corresponding candidate is not copied, but the maximum length is still returned.
+
+#### rtcGetMaxDataChannelStream
+```
+int rtcGetMaxDataChannelStream(int pc);
+```
+
+Retrieves the maximum stream ID a Data Channel may use. It is useful to create user-negotiated Data Channels with `negotiated=true` and `manualStream=true`. The maximum is negotiated during connection, therefore the final value after connection might be lower than before connection if the remote maximum is lower.
+
+Arguments:
+- `pc`: the Peer Connection identifier
+
+Return value: the maximum stream ID (`stream` for a Data Channel may be set from 0 to this value included) or a negative error code
+
+#### rtcGetRemoteMaxMessageSize
+
+```
+int rtcGetRemoteMaxMessageSize(int pc)
+```
+
+Retrieves the maximum message size for data channels on the peer connection as negotiated with the remote peer.
+
+Arguments:
+
+- `pc`: the Peer Connection identifier
+
+Return value: the maximum message size for data channels or a negative error code
 
 ### Channel (Common API for Data Channel, Track, and WebSocket)
 
@@ -391,6 +440,8 @@ int rtcSetMessageCallback(int id, rtcMessageCallbackFunc cb)
 
 It is called when the channel receives a message. While it is set, messages can't be received with `rtcReceiveMessage`.
 
+Track: By default, the track receives data as RTP packets.
+
 ```
 int rtcSetBufferedAmountLowCallback(int id, rtcBufferedAmountLowCallbackFunc cb)
 ```
@@ -406,6 +457,60 @@ int rtcSetAvailableCallback(int id, rtcAvailableCallbackFunc cb)
 `cb` must have the following signature: `void myAvailableCallback(int id, void *user_ptr)`
 
 It is called when messages are now available to be received with `rtcReceiveMessage`.
+
+#### rtcSendMessage
+
+```
+int rtcSendMessage(int id, const char *data, int size)
+```
+
+Sends a message in the channel.
+
+Arguments:
+
+- `id`: the channel identifier
+- `data`: the message data
+- `size`: if size >= 0, `data` is interpreted as a binary message of length `size`, otherwise it is interpreted as a null-terminated UTF-8 string.
+
+Return value: `RTC_ERR_SUCCESS` or a negative error code
+
+The message is sent immediately if possible, otherwise it is buffered to be sent later.
+
+Data Channel and WebSocket: If the message may not be sent immediately due to flow control or congestion control, it is buffered until it can actually be sent. You can retrieve the current buffered data size with `rtcGetBufferedAmount`.
+
+Track: By default, the track expects RTP packets. There is no flow or congestion control, packets are never buffered and `rtcGetBufferedAmount` always returns 0.
+
+#### rtcClose
+
+```
+int rtcClose(int id)
+```
+
+Close the channel.
+
+Arguments:
+
+- `id`: the channel identifier
+
+Return value: `RTC_ERR_SUCCESS` or a negative error code
+
+WebSocket: Like with the JavaScript API, the state will first change to closing, then closed only after the connection has been actually closed.
+
+#### rtcDelete
+
+```
+int rtcDelete(int id)
+```
+
+Deletes the channel.
+
+Arguments:
+
+- `id`: the channel identifier
+
+Return value: `RTC_ERR_SUCCESS` or a negative error code
+
+If it is not already closed, the channel is implicitly closed before being deleted. After this function has been called, `id` must not be used in a function call anymore. This function will block until all scheduled callbacks of `id` return (except the one this function might be called in) and no other callback will be called for `id` after it returns.
 
 #### rtcIsOpen
 
@@ -431,26 +536,19 @@ Arguments:
 
 Return value: `true` if the channel exists and is closed (not open and not connecting), `false` otherwise
 
-#### rtcSendMessage
+#### rtcGetMaxMessageSize
 
 ```
-int rtcSendMessage(int id, const char *data, int size)
+int rtcGetMaxMessageSize(int id)
 ```
 
-Sends a message in the channel.
+Retrieves the maximum message size for the channel.
 
 Arguments:
 
 - `id`: the channel identifier
-- `data`: the message data
-- `size`: if size >= 0, `data` is interpreted as a binary message of length `size`, otherwise it is interpreted as a null-terminated UTF-8 string.
 
-Return value: `RTC_ERR_SUCCESS` or a negative error code
-
-The message is sent immediately if possible, otherwise it is buffered to be sent later.
-
-Data Channel and WebSocket: If the message may not be sent immediately due to flow control or congestion control, it is buffered until it can actually be sent. You can retrieve the current buffered data size with `rtcGetBufferedAmount`.
-Tracks are an exception: There is no flow or congestion control, messages are never buffered and `rtcGetBufferedAmount` always returns 0.
+Return value: the maximum message size or a negative error code
 
 #### rtcGetBufferedAmount
 
@@ -459,6 +557,10 @@ int rtcGetBufferedAmount(int id)
 ```
 
 Retrieves the current buffered amount, i.e. the total size of currently buffered messages waiting to be actually sent in the channel. This does not account for the data buffered at the transport level.
+
+Arguments:
+
+- `id`: the channel identifier
 
 Return value: the buffered amount or a negative error code
 
@@ -489,11 +591,13 @@ Arguments:
 
 - `id`: the channel identifier
 - `buffer`: a user-supplied buffer where to write the message data
-- `size`: a pointer to a user-supplied int which must be initialized to the size of `buffer`. On success, the function will write the size of the message to it before returning.
+- `size`: a pointer to a user-supplied int which must be initialized to the size of `buffer`. On success, the function will write the size of the message to it before returning (positive size if binary, negative size including terminating 0 if string).
 
 Return value: `RTC_ERR_SUCCESS` or a negative error code (In particular, `RTC_ERR_NOT_AVAIL` is returned when there are no pending messages)
 
 If `buffer` is `NULL`, the message is not copied and kept pending but the size is still written to `size`.
+
+Track: By default, the track receives data as RTP packets.
 
 #### rtcGetAvailableAmount
 
@@ -541,20 +645,20 @@ Arguments:
 - `label`: a user-defined UTF-8 string representing the Data Channel name
 - `init`: a structure of initialization settings containing:
   - `reliability`: a structure of reliability settings containing:
-    - `bool unordered`: if `true`, the Data Channel will not enforce message ordering, else it will be ordered
-    - `bool unreliable`: if `true`, the Data Channel will not enforce strict reliability, else it will be reliable
-    - `unsigned int maxPacketLifeTime`: if unreliable, maximum packet life time in milliseconds
-    - `unsigned int maxRetransmits`: if unreliable and maxPacketLifeTime is 0, maximum number of retransmissions (0 means no retransmission)
+    - `unordered`: if `true`, the Data Channel will not enforce message ordering, else it will be ordered
+    - `unreliable`: if `true`, the Data Channel will not enforce strict reliability, else it will be reliable
+    - `maxPacketLifeTime`: if unreliable, time window in milliseconds during which transmissions and retransmissions may occur
+    - `maxRetransmits`: if unreliable and maxPacketLifeTime is 0, maximum number of attempted retransmissions (0 means no retransmission)
   - `protocol` (optional): a user-defined UTF-8 string representing the Data Channel protocol, empty if NULL
   - `negotiated`: if `true`, the Data Channel is assumed to be negotiated by the user and won't be negotiated by the WebRTC layer
   - `manualStream`: if `true`, the Data Channel will use `stream` as stream ID, else an available id is automatically selected
-  - `stream` (0-65534): if `manualStream` is `true`, the Data Channel will use it as stream ID, else it is ignored
+  - `stream`: if `manualStream` is `true`, the Data Channel will use it as stream ID, else it is ignored
 
 `rtcDataChannel()` is equivalent to `rtcDataChannelEx()` with settings set to ordered, reliable, non-negotiated, with automatic stream ID selection (all flags set to `false`), and `protocol` set to an empty string.
 
 Return value: the identifier of the new Data Channel or a negative error code.
 
-The Data Channel must be deleted with `rtcDeleteDataChannel`.
+The Data Channel must be deleted with `rtcDeleteDataChannel` (or `rtcDelete`).
 
 If `disableAutoNegotiation` was not set in `rtcConfiguration`, the library will automatically initiate the negotiation by calling `rtcSetLocalDescription` internally. Otherwise, the user must call `rtcSetLocalDescription` to initiate the negotiation after creating the first Data Channel.
 
@@ -584,7 +688,7 @@ Arguments:
 
 - `dc`: the Data Channel identifier
 
-Return value: the stream ID (0-65534) or a negative error code
+Return value: the stream ID or a negative error code
 
 #### rtcGetDataChannelLabel
 
@@ -654,7 +758,7 @@ Arguments:
 
 Return value: the identifier of the new Track or a negative error code
 
-The new track must be deleted with `rtcDeleteTrack`.
+The new track must be deleted with `rtcDeleteTrack` (or `rtcDelete`).
 
 The user must call `rtcSetLocalDescription` to negotiate the track.
 
@@ -682,7 +786,7 @@ Retrieves the SDP media description of a Track.
 
 Arguments:
 
-- `dc`: the Track identifier
+- `tr`: the Track identifier
 - `buffer`: a user-supplied buffer to store the description
 - `size`: the size of `buffer`
 
@@ -690,7 +794,40 @@ Return value: the length of the string copied in buffer (including the terminati
 
 If `buffer` is `NULL`, the description is not copied but the size is still returned.
 
-### Media
+#### rtcGetTrackMid
+
+```
+int rtcGetTrackMid(int tr, char *buffer, int size)
+```
+
+Retrieves the mid (media indentifier) of a Track.
+
+Arguments:
+
+- `tr`: the Track identifier
+- `buffer`: a user-supplied buffer to store the mid
+- `size`: the size of `buffer`
+
+Return value: the length of the string copied in buffer (including the terminating null character) or a negative error code
+
+If `buffer` is `NULL`, the mid is not copied but the size is still returned.
+
+#### rtcGetTrackDirection
+
+```
+int rtcGetTrackDirection(int tr, rtcDirection *direction)
+```
+
+Retrieves the direction of a Track.
+
+Arguments:
+
+- `tr`: the Track identifier
+- `direction`: a pointer to a rtcDescription enum to store the result
+
+On success, the value pointed by `direction` will be set to one of the following: `RTC_DIRECTION_SENDONLY`, `RTC_DIRECTION_RECVONLY`, `RTC_DIRECTION_SENDRECV`, `RTC_DIRECTION_INACTIVE`, or `RTC_DIRECTION_UNKNOWN`.
+
+### Media handling
 
 TODO
 
@@ -703,7 +840,12 @@ int rtcCreateWebSocket(const char *url)
 int rtcCreateWebSocketEx(const char *url, const rtcWsConfiguration *config)
 
 typedef struct {
-	bool disableTlsVerification;    // if true, disable TLS certificate verification
+	bool disableTlsVerification;
+	const char **protocols;
+	int protocolsCount;
+	int connectionTimeoutMs;
+	int pingIntervalMs;
+	int maxOutstandingPings;
 } rtcWsConfiguration;
 ```
 
@@ -713,11 +855,16 @@ Arguments:
 
 - `url`: a null-terminated string representing the fully-qualified URL to open.
 - `config`: a structure with the following parameters:
-  - `bool disableTlsVerification`: if true, don't verify the TLS certificate, else try to verify it if possible
+  - `disableTlsVerification`: if true, don't verify the TLS certificate, else try to verify it if possible
+  - `protocols` (optional): an array of pointers on null-terminated protocol names (NULL if unused)
+  - `protocolsCount` (optional): number of URLs in the array pointed by `protocols` (0 if unused)
+  - `connectionTimeoutMs` (optional): connection timeout in milliseconds (0 if default, < 0 if disabled)
+  - `pingIntervalMs` (optional): ping interval in milliseconds (0 if default, < 0 if disabled)
+  - `maxOutstandingPings` (optional): number of unanswered pings before declaring failure (0 if default, < 0 if disabled)
 
 Return value: the identifier of the new WebSocket or a negative error code
 
-The new WebSocket must be deleted with `rtcDeleteWebSocket`. The scheme of the URL must be either `ws` or `wss`.
+The new WebSocket must be deleted with `rtcDeleteWebSocket` (or `rtcDelete`). The scheme of the URL must be either `ws` or `wss`.
 
 #### rtcDeleteWebSocket
 
@@ -777,11 +924,11 @@ int rtcCreateWebSocketServer(const rtcWsServerConfiguration *config, rtcWebSocke
 typedef struct {
 	uint16_t port;
 	bool enableTls;
-	const char *certificatePemFile; // NULL for autogenerated certificate
-	const char *keyPemFile;         // NULL for autogenerated certificate
-	const char *keyPemPass;         // NULL if no pass
+	const char *certificatePemFile;
+	const char *keyPemFile;
+	const char *keyPemPass;
+	int connectionTimeoutMs;
 } rtcWsServerConfiguration;
-
 ```
 
 Creates a new WebSocket server.
@@ -789,11 +936,12 @@ Creates a new WebSocket server.
 Arguments:
 
 - `config`: a structure with the following parameters:
-  - `uint16_t port`: the port to listen on (if 0, automatically select an available port)
-  - `bool enableTls`: if true, enable the TLS layer (WSS)
-  - `const char *certificatePemFile`: path of the file containing the TLS PEM certificate (`NULL` for an autogenerated certificate)
-  - `const char *keyPemFile`: path of the file containing the TLS PEM key (`NULL` for an autogenerated certificate)
-  - `const char *keyPemPass`: the TLS PEM key passphrase (NULL if no passphrase)
+  - `port`: the port to listen on (if 0, automatically select an available port)
+  - `enableTls`: if true, enable the TLS layer (WSS)
+  - `certificatePemFile` (optional): PEM certificate or path of the file containing the PEM certificate (`NULL` for an autogenerated certificate)
+  - `keyPemFile` (optional): PEM key or path of the file containing the PEM key (`NULL` for an autogenerated certificate)
+  - `keyPemPass` (optional): PEM key file passphrase (NULL if no passphrase)
+  - `connectionTimeoutMs` (optional): connection timeout in milliseconds (0 if default, < 0 if disabled)
 - `cb`: the callback for incoming client WebSocket connections (must not be `NULL`)
 
 `cb` must have the following signature: `void rtcWebSocketClientCallbackFunc(int wsserver, int ws, void *user_ptr)`

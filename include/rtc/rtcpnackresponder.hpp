@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2020 Filip Klembara (in2core)
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #ifndef RTC_RTCP_NACK_RESPONDER_H
@@ -21,100 +11,62 @@
 
 #if RTC_ENABLE_MEDIA
 
-#include "mediahandlerelement.hpp"
+#include "mediahandler.hpp"
 
 #include <queue>
 #include <unordered_map>
-#include <map>
-#include <set>
-#include <queue>
 
 namespace rtc {
 
-class RTC_CPP_EXPORT RtcpNackResponder final : public MediaHandlerElement {
+class RTC_CPP_EXPORT RtcpNackResponder final : public MediaHandler {
+public:
+	static const size_t DefaultMaxSize = 512;
 
-	/// Packet storage
-	class RTC_CPP_EXPORT OutgoingStorage {
+	RtcpNackResponder(size_t maxSize = DefaultMaxSize);
+
+	void incoming(message_vector &messages, const message_callback &send) override;
+	void outgoing(message_vector &messages, const message_callback &send) override;
+
+private:
+	// Packet storage
+	class RTC_CPP_EXPORT Storage {
+
+		/// Packet storage element
+		struct RTC_CPP_EXPORT Element {
+			Element(binary_ptr packet, uint16_t sequenceNumber, shared_ptr<Element> next = nullptr);
+			const binary_ptr packet;
+			const uint16_t sequenceNumber;
+			/// Pointer to newer element
+			shared_ptr<Element> next = nullptr;
+		};
+
+	private:
+		/// Oldest packet in storage
+		shared_ptr<Element> oldest = nullptr;
+		/// Newest packet in storage
+		shared_ptr<Element> newest = nullptr;
 		/// Inner storage
-		std::unordered_map<uint16_t, binary_ptr> storage{};
-		std::queue<uint16_t> packetOrder{};
+		std::unordered_map<uint16_t, shared_ptr<Element>> storage{};
+		std::mutex mutex;
 
 		/// Maximum storage size
-		const unsigned maximumSize;
+		const size_t maxSize;
 
-		/// Returnst current size
-		unsigned size();
+		/// Returns current size
+		size_t size();
+
+	public:
+		Storage(size_t _maxSize);
 
 		/// Returns packet with given sequence number
 		optional<binary_ptr> get(uint16_t sequenceNumber);
-
-		/// Remove packet based on sequence number
-		void remove(uint16_t sequenceNumber);
-
-	public:
-		static const unsigned defaultMaximumSize = 512;
-
-		/// Get and remove packet with given sequence number
-		optional<binary_ptr> getAndRemove(uint16_t sequenceNumber);
-
-		OutgoingStorage(unsigned _maximumSize);
 
 		/// Stores packet
 		/// @param packet Packet
 		void store(binary_ptr packet);
 	};
-	/// Incoming Packet storage
-	class RTC_CPP_EXPORT IncomingStorage {
 
-		/// Packet storage element
-		struct RTC_CPP_EXPORT Element {
-			Element(binary_ptr packet, long long time_ms);
-			const binary_ptr packet;
-			long long time_ms;
-		};
-
-		std::map<uint16_t, shared_ptr<Element>> storage1{};
-		std::map<uint16_t, shared_ptr<Element>> storage2{};
-		std::map<uint16_t, shared_ptr<Element>> * currentStorage;
-		std::map<uint16_t, shared_ptr<Element>> * overflowStorage;
-		optional<uint16_t> previousReportedSequenceNumber = nullopt;
-		std::set<uint16_t> requestedSequenceNumbers{};
-
-		optional<std::pair<uint16_t, bool>> getPreviousSequenceNumberWithOverflow(uint16_t sequence_number);
-		std::map<uint16_t, shared_ptr<Element>>::iterator addPacket(binary_ptr packet, uint16_t sequence_number, long long time_ms, std::map<uint16_t, shared_ptr<Element>> * used_storage);
-		uint16_t getPreviousReceivedSequenceNumber(std::map<uint16_t, shared_ptr<Element>>::iterator element_iterator, std::map<uint16_t, shared_ptr<Element>> * used_storage);
-		optional<std::pair<uint16_t, uint16_t>> generateNack(uint16_t previous_recieved_sequence_number, uint16_t sequence_number);
-		ChainedMessagesProduct getIncomingPackets(long long time_ms);
-
-		long long maximumWaitTime_ms;
-	public:
-		IncomingStorage(long long maximumWaitTime_ms);
-		/// Stores packet
-		/// @param packet Packet
-		std::pair<ChainedMessagesProduct, std::optional<std::pair<uint16_t, uint16_t>>> store(binary_ptr packet, long long time_ms);
-
-		static const long long defaultWaitTime = 250;
-	};
-
-	const shared_ptr<OutgoingStorage> outgoingStorage;
-	const shared_ptr<IncomingStorage> incomingStorage;
-
-public:
-	RtcpNackResponder(unsigned maxStoredPacketCount = OutgoingStorage::defaultMaximumSize, long long maxWaitTime = IncomingStorage::defaultWaitTime);
-
-	/// Checks for RTCP NACK and handles it,
-	/// @param message RTCP message
-	/// @returns unchanged RTCP message and requested RTP packets
-	ChainedIncomingControlProduct processIncomingControlMessage(message_ptr message) override;
-
-	/// Stores RTP packets in internal storage
-	/// @param messages RTP packets
-	/// @param control RTCP
-	/// @returns Unchanged RTP and RTCP
-	ChainedOutgoingProduct processOutgoingBinaryMessage(ChainedMessagesProduct messages,
-														message_ptr control) override;
-
-	ChainedIncomingProduct processIncomingBinaryMessage(ChainedMessagesProduct messages) override;
+	const shared_ptr<Storage> mStorage;
 };
 
 } // namespace rtc

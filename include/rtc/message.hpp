@@ -1,25 +1,16 @@
 /**
  * Copyright (c) 2019-2020 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #ifndef RTC_MESSAGE_H
 #define RTC_MESSAGE_H
 
 #include "common.hpp"
+#include "frameinfo.hpp"
 #include "reliability.hpp"
 
 #include <functional>
@@ -42,10 +33,12 @@ struct RTC_CPP_EXPORT Message : binary {
 	unsigned int stream = 0; // Stream id (SCTP stream or SSRC)
 	unsigned int dscp = 0;   // Differentiated Services Code Point
 	shared_ptr<Reliability> reliability;
+	shared_ptr<FrameInfo> frameInfo;
 };
 
 using message_ptr = shared_ptr<Message>;
 using message_callback = std::function<void(message_ptr message)>;
+using message_vector = std::vector<message_ptr>;
 
 inline size_t message_size_func(const message_ptr &m) {
 	return m->type == Message::Binary || m->type == Message::String ? m->size() : 0;
@@ -53,10 +46,12 @@ inline size_t message_size_func(const message_ptr &m) {
 
 template <typename Iterator>
 message_ptr make_message(Iterator begin, Iterator end, Message::Type type = Message::Binary,
-                         unsigned int stream = 0, shared_ptr<Reliability> reliability = nullptr) {
+                         unsigned int stream = 0, shared_ptr<Reliability> reliability = nullptr,
+                         shared_ptr<FrameInfo> frameInfo = nullptr) {
 	auto message = std::make_shared<Message>(begin, end, type);
 	message->stream = stream;
 	message->reliability = reliability;
+	message->frameInfo = frameInfo;
 	return message;
 }
 
@@ -66,11 +61,23 @@ RTC_CPP_EXPORT message_ptr make_message(size_t size, Message::Type type = Messag
 
 RTC_CPP_EXPORT message_ptr make_message(binary &&data, Message::Type type = Message::Binary,
                                         unsigned int stream = 0,
-                                        shared_ptr<Reliability> reliability = nullptr);
+                                        shared_ptr<Reliability> reliability = nullptr,
+                                        shared_ptr<FrameInfo> frameInfo = nullptr);
+
+RTC_CPP_EXPORT message_ptr make_message(size_t size, message_ptr orig);
 
 RTC_CPP_EXPORT message_ptr make_message(message_variant data);
 
+#if RTC_ENABLE_MEDIA
+
+// Reconstructs a message_ptr from an opaque rtcMessage pointer that
+// was allocated by rtcCreateOpaqueMessage().
+message_ptr make_message_from_opaque_ptr(rtcMessage *&&message);
+
+#endif
+
 RTC_CPP_EXPORT message_variant to_variant(Message &&message);
+RTC_CPP_EXPORT message_variant to_variant(const Message &message);
 
 } // namespace rtc
 

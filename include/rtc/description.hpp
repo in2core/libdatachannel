@@ -2,19 +2,9 @@
  * Copyright (c) 2019-2020 Paul-Louis Ageneau
  * Copyright (c) 2020 Staz Modrzynski
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #ifndef RTC_DESCRIPTION_H
@@ -32,11 +22,22 @@ namespace rtc {
 const string DEFAULT_OPUS_AUDIO_PROFILE =
     "minptime=10;maxaveragebitrate=96000;stereo=1;sprop-stereo=1;useinbandfec=1";
 
-// Use Constrained Baseline profile Level 4.2 (necessary for Firefox)
+// Use Constrained Baseline profile Level 3.1 (necessary for Firefox)
 // https://developer.mozilla.org/en-US/docs/Web/Media/Formats/WebRTC_codecs#Supported_video_codecs
 // TODO: Should be 42E0 but 42C0 appears to be more compatible. Investigate this.
 const string DEFAULT_H264_VIDEO_PROFILE =
     "profile-level-id=42e01f;packetization-mode=1;level-asymmetry-allowed=1";
+
+struct CertificateFingerprint {
+	enum class Algorithm { Sha1, Sha224, Sha256, Sha384, Sha512 };
+	static string AlgorithmIdentifier(Algorithm algorithm);
+	static size_t AlgorithmSize(Algorithm algorithm);
+
+	bool isValid() const;
+
+	Algorithm algorithm;
+	string value;
+};
 
 class RTC_CPP_EXPORT Description {
 public:
@@ -58,90 +59,109 @@ public:
 	string typeString() const;
 	Role role() const;
 	string bundleMid() const;
+	std::vector<string> iceOptions() const;
 	optional<string> iceUfrag() const;
 	optional<string> icePwd() const;
-	optional<string> fingerprint() const;
+	optional<CertificateFingerprint> fingerprint() const;
 	bool ended() const;
 
 	void hintType(Type type);
-	void setFingerprint(string fingerprint);
+	void setFingerprint(CertificateFingerprint f);
+	void addIceOption(string option);
+	void removeIceOption(const string &option);
 
+	std::vector<string> attributes() const;
+	void addAttribute(string attr);
+	void removeAttribute(const string &attr);
+
+	std::vector<Candidate> candidates() const;
+	std::vector<Candidate> extractCandidates();
 	bool hasCandidate(const Candidate &candidate) const;
 	void addCandidate(Candidate candidate);
 	void addCandidates(std::vector<Candidate> candidates);
 	void endCandidates();
-	std::vector<Candidate> extractCandidates();
 
 	operator string() const;
-	string generateSdp(string_view eol) const;
-	string generateApplicationSdp(string_view eol) const;
+	string generateSdp(string_view eol = "\r\n") const;
+	string generateApplicationSdp(string_view eol = "\r\n") const;
 
 	class RTC_CPP_EXPORT Entry {
 	public:
 		virtual ~Entry() = default;
 
-		virtual string type() const { return mType; }
-		virtual string description() const { return mDescription; }
-		virtual string mid() const { return mMid; }
-		Direction direction() const { return mDirection; }
+		virtual string type() const;
+		virtual string description() const;
+		virtual string mid() const;
+
+		Direction direction() const;
 		void setDirection(Direction dir);
 
-		operator string() const;
-		string generateSdp(string_view eol, string_view addr, string_view port) const;
+		bool isRemoved() const;
+		void markRemoved();
 
-		virtual void parseSdpLine(string_view line);
+		std::vector<string> attributes() const;
+		void addAttribute(string attr);
+		void removeAttribute(const string &attr);
+		void addRid(string rid);
 
-		std::vector<string>::iterator beginAttributes();
-		std::vector<string>::iterator endAttributes();
-		std::vector<string>::iterator removeAttribute(std::vector<string>::iterator iterator);
+		struct RTC_CPP_EXPORT ExtMap {
+			static int parseId(string_view description);
 
-		struct ExtMap {
+			ExtMap(int id, string uri, Direction direction = Direction::Unknown);
 			ExtMap(string_view description);
-			ExtMap() {}
+
+			void setDescription(string_view description);
 
 			int id;
 			string uri;
 			string attributes;
 			Direction direction = Direction::Unknown;
-
-			static int parseId(string_view view);
-			void setDescription(string_view view);
 		};
 
-		void addExtMap(const ExtMap &map);
+		std::vector<int> extIds();
+		ExtMap *extMap(int id);
+		const ExtMap *extMap(int id) const;
+		void addExtMap(ExtMap map);
+		void removeExtMap(int id);
 
-		std::map<int, ExtMap>::iterator beginExtMaps();
-		std::map<int, ExtMap>::iterator endExtMaps();
-		std::map<int, ExtMap>::iterator removeExtMap(std::map<int, ExtMap>::iterator iterator);
+		operator string() const;
+		string generateSdp(string_view eol = "\r\n", string_view addr = "0.0.0.0",
+		                   uint16_t port = 9) const;
+
+		virtual void parseSdpLine(string_view line);
 
 	protected:
 		Entry(const string &mline, string mid, Direction dir = Direction::Unknown);
+
 		virtual string generateSdpLines(string_view eol) const;
 
 		std::vector<string> mAttributes;
-		std::map<int, ExtMap> mExtMap;
+		std::map<int, ExtMap> mExtMaps;
 
 	private:
 		string mType;
 		string mDescription;
 		string mMid;
+		std::vector<string> mRids;
 		Direction mDirection;
+		bool mIsRemoved;
 	};
 
 	struct RTC_CPP_EXPORT Application : public Entry {
 	public:
 		Application(string mid = "data");
+		Application(const string &mline, string mid);
 		virtual ~Application() = default;
 
 		string description() const override;
 		Application reciprocate() const;
 
-		void setSctpPort(uint16_t port) { mSctpPort = port; }
-		void hintSctpPort(uint16_t port) { mSctpPort = mSctpPort.value_or(port); }
-		void setMaxMessageSize(size_t size) { mMaxMessageSize = size; }
+		void setSctpPort(uint16_t port);
+		void hintSctpPort(uint16_t port);
+		void setMaxMessageSize(size_t size);
 
-		optional<uint16_t> sctpPort() const { return mSctpPort; }
-		optional<size_t> maxMessageSize() const { return mMaxMessageSize; }
+		optional<uint16_t> sctpPort() const;
+		optional<size_t> maxMessageSize() const;
 
 		virtual void parseSdpLine(string_view line) override;
 
@@ -162,62 +182,59 @@ public:
 		string description() const override;
 		Media reciprocate() const;
 
-		void removeFormat(const string &fmt);
-
 		void addSSRC(uint32_t ssrc, optional<string> name, optional<string> msid = nullopt,
-		             optional<string> trackID = nullopt);
-		void removeSSRC(uint32_t oldSSRC);
-		void replaceSSRC(uint32_t oldSSRC, uint32_t ssrc, optional<string> name,
+		             optional<string> trackId = nullopt);
+		void removeSSRC(uint32_t ssrc);
+		void replaceSSRC(uint32_t old, uint32_t ssrc, optional<string> name,
 		                 optional<string> msid = nullopt, optional<string> trackID = nullopt);
-		bool hasSSRC(uint32_t ssrc);
-		std::vector<uint32_t> getSSRCs();
-		std::optional<std::string> getCNameForSsrc(uint32_t ssrc);
+		bool hasSSRC(uint32_t ssrc) const;
+		void clearSSRCs();
+		std::vector<uint32_t> getSSRCs() const;
+		optional<std::string> getCNameForSsrc(uint32_t ssrc) const;
 
+		int bitrate() const;
 		void setBitrate(int bitrate);
-		int getBitrate() const;
 
-		bool hasPayloadType(int payloadType) const;
+		struct RTC_CPP_EXPORT RtpMap {
+			static int parsePayloadType(string_view description);
 
-		void addRTXCodec(unsigned int payloadType, unsigned int originalPayloadType,
-		                 unsigned int clockRate);
+			explicit RtpMap(int payloadType);
+			RtpMap(string_view description);
 
-		virtual void parseSdpLine(string_view line) override;
+			void setDescription(string_view description);
 
-		struct RTPMap {
-			RTPMap(string_view mline);
-			RTPMap() {}
+			void addFeedback(string fb);
+			void removeFeedback(const string &str);
+			void addParameter(string p);
+			void removeParameter(const string &str);
 
-			void removeFB(const string &string);
-			void addFB(const string &string);
-			void addAttribute(string attr) { fmtps.emplace_back(std::move(attr)); }
-
-			int pt;
+			int payloadType;
 			string format;
 			int clockRate;
 			string encParams;
 
 			std::vector<string> rtcpFbs;
 			std::vector<string> fmtps;
-
-			static int parsePT(string_view view);
-			void setMLine(string_view view);
 		};
 
-		void addRTPMap(const RTPMap &map);
+		bool hasPayloadType(int payloadType) const;
+		std::vector<int> payloadTypes() const;
+		RtpMap *rtpMap(int payloadType);
+		const RtpMap *rtpMap(int payloadType) const;
+		void addRtpMap(RtpMap map);
+		void removeRtpMap(int payloadType);
+		void removeFormat(const string &format);
 
-		std::map<int, RTPMap>::iterator beginMaps();
-		std::map<int, RTPMap>::iterator endMaps();
-		std::map<int, RTPMap>::iterator removeMap(std::map<int, RTPMap>::iterator iterator);
+		void addRtxCodec(int payloadType, int origPayloadType, unsigned int clockRate);
+
+		virtual void parseSdpLine(string_view line) override;
 
 	private:
 		virtual string generateSdpLines(string_view eol) const override;
 
 		int mBas = -1;
 
-		Media::RTPMap &getFormat(int fmt);
-		Media::RTPMap &getFormat(const string &fmt);
-
-		std::map<int, RTPMap> mRtpMap;
+		std::map<int, RtpMap> mRtpMaps;
 		std::vector<uint32_t> mSsrcs;
 		std::map<uint32_t, string> mCNameMap;
 	};
@@ -227,8 +244,15 @@ public:
 		Audio(string mid = "audio", Direction dir = Direction::SendOnly);
 
 		void addAudioCodec(int payloadType, string codec, optional<string> profile = std::nullopt);
-
 		void addOpusCodec(int payloadType, optional<string> profile = DEFAULT_OPUS_AUDIO_PROFILE);
+		void addPCMACodec(int payloadType, optional<string> profile = std::nullopt);
+		void addPCMUCodec(int payloadType, optional<string> profile = std::nullopt);
+		void addAACCodec(int payloadType, optional<string> profile = std::nullopt);
+
+		[[deprecated("Use addAACCodec")]] inline void
+		addAacCodec(int payloadType, optional<string> profile = std::nullopt) {
+			addAACCodec(payloadType, std::move(profile));
+		};
 	};
 
 	class RTC_CPP_EXPORT Video : public Media {
@@ -238,8 +262,10 @@ public:
 		void addVideoCodec(int payloadType, string codec, optional<string> profile = std::nullopt);
 
 		void addH264Codec(int payloadType, optional<string> profile = DEFAULT_H264_VIDEO_PROFILE);
-		void addVP8Codec(int payloadType);
-		void addVP9Codec(int payloadType);
+		void addH265Codec(int payloadType, optional<string> profile = std::nullopt);
+		void addVP8Codec(int payloadType, optional<string> profile = std::nullopt);
+		void addVP9Codec(int payloadType, optional<string> profile = std::nullopt);
+		void addAV1Codec(int payloadType, optional<string> profile = std::nullopt);
 	};
 
 	bool hasApplication() const;
@@ -274,8 +300,10 @@ private:
 	Role mRole;
 	string mUsername;
 	string mSessionId;
+	std::vector<string> mIceOptions;
 	optional<string> mIceUfrag, mIcePwd;
-	optional<string> mFingerprint;
+	optional<CertificateFingerprint> mFingerprint;
+	std::vector<string> mAttributes; // other attributes
 
 	// Entries
 	std::vector<shared_ptr<Entry>> mEntries;
@@ -286,10 +314,11 @@ private:
 	bool mEnded = false;
 };
 
-} // namespace rtc
+RTC_CPP_EXPORT std::ostream &operator<<(std::ostream &out, const Description &description);
+RTC_CPP_EXPORT std::ostream &operator<<(std::ostream &out, Description::Type type);
+RTC_CPP_EXPORT std::ostream &operator<<(std::ostream &out, Description::Role role);
+RTC_CPP_EXPORT std::ostream &operator<<(std::ostream &out, const Description::Direction &direction);
 
-RTC_CPP_EXPORT std::ostream &operator<<(std::ostream &out, const rtc::Description &description);
-RTC_CPP_EXPORT std::ostream &operator<<(std::ostream &out, rtc::Description::Type type);
-RTC_CPP_EXPORT std::ostream &operator<<(std::ostream &out, rtc::Description::Role role);
+} // namespace rtc
 
 #endif

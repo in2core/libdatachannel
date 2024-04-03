@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2020 Filip Klembara (in2core)
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #ifndef RTC_RTP_PACKETIZER_H
@@ -21,36 +11,75 @@
 
 #if RTC_ENABLE_MEDIA
 
+#include "mediahandler.hpp"
 #include "message.hpp"
 #include "rtppacketizationconfig.hpp"
 
 namespace rtc {
 
-/// Class responsible for RTP packetization
-class RTC_CPP_EXPORT RtpPacketizer {
-	static const auto rtpHeaderSize = 12;
-	static const auto rtpExtHeaderCvoSize = 8;
-
+/// RTP packetizer
+class RTC_CPP_EXPORT RtpPacketizer : public MediaHandler {
 public:
-	// RTP configuration
-	const shared_ptr<RtpPacketizationConfig> rtpConfig;
-
-	/// Constructs packetizer with given RTP configuration.
+	/// Constructs packetizer with given RTP configuration
 	/// @note RTP configuration is used in packetization process which may change some configuration
 	/// properties such as sequence number.
 	/// @param rtpConfig  RTP configuration
 	RtpPacketizer(shared_ptr<RtpPacketizationConfig> rtpConfig);
+	virtual ~RtpPacketizer();
 
-	/// Creates RTP packet for given payload based on `rtpConfig`.
+	virtual void media(const Description::Media &desc) override;
+	virtual void outgoing(message_vector &messages, const message_callback &send) override;
+
+	/// RTP packetization config
+	const shared_ptr<RtpPacketizationConfig> rtpConfig;
+
+protected:
+	/// Creates RTP packet for given payload
 	/// @note This function increase sequence number after packetization.
 	/// @param payload RTP payload
 	/// @param setMark Set marker flag in RTP packet if true
-	virtual shared_ptr<binary> packetize(shared_ptr<binary> payload, bool setMark);
-	
-	/// Get payload from RTP packet .
-	/// @param packet RTP packet
-	virtual shared_ptr<binary> depacketize(shared_ptr<binary> packet);
+	virtual message_ptr packetize(shared_ptr<binary> payload, bool mark);
+
+private:
+	static const auto RtpHeaderSize = 12;
+	static const auto RtpExtHeaderCvoSize = 8;
 };
+
+// Generic audio RTP packetizer
+template <uint32_t DEFAULT_CLOCK_RATE>
+class RTC_CPP_EXPORT AudioRtpPacketizer final : public RtpPacketizer {
+public:
+	inline static const uint32_t DefaultClockRate = DEFAULT_CLOCK_RATE;
+	inline static const uint32_t defaultClockRate [[deprecated("Use DefaultClockRate")]] =
+	    DEFAULT_CLOCK_RATE; // for backward compatibility
+
+	AudioRtpPacketizer(shared_ptr<RtpPacketizationConfig> rtpConfig)
+	    : RtpPacketizer(std::move(rtpConfig)) {}
+};
+
+// Audio RTP packetizers
+using OpusRtpPacketizer = AudioRtpPacketizer<48000>;
+using AACRtpPacketizer = AudioRtpPacketizer<48000>;
+
+// Dummy wrapper for backward compatibility, do not use
+class RTC_CPP_EXPORT PacketizationHandler final : public MediaHandler {
+public:
+	PacketizationHandler(shared_ptr<RtpPacketizer> packetizer)
+	    : mPacketizer(std::move(packetizer)) {}
+
+	inline void outgoing(message_vector &messages, const message_callback &send) {
+		return mPacketizer->outgoing(messages, send);
+	}
+
+private:
+	shared_ptr<RtpPacketizer> mPacketizer;
+};
+
+// Audio packetization handlers for backward compatibility, do not use
+using OpusPacketizationHandler [[deprecated("Add OpusRtpPacketizer directly")]] =
+    PacketizationHandler;
+using AACPacketizationHandler [[deprecated("Add AACRtpPacketizer directly")]] =
+    PacketizationHandler;
 
 } // namespace rtc
 

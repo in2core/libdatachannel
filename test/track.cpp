@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2019 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #include "rtc/rtc.hpp"
@@ -82,18 +72,35 @@ void test_track() {
 	shared_ptr<Track> t2;
 	string newTrackMid;
 	pc2.onTrack([&t2, &newTrackMid](shared_ptr<Track> t) {
-		cout << "Track 2: Received with mid \"" << t->mid() << "\"" << endl;
-		if (t->mid() != newTrackMid) {
+		string mid = t->mid();
+		cout << "Track 2: Received track with mid \"" << mid << "\"" << endl;
+		if (mid != newTrackMid) {
 			cerr << "Wrong track mid" << endl;
 			return;
 		}
+
+		t->onOpen([mid]() { cout << "Track 2: Track with mid \"" << mid << "\" is open" << endl; });
+
+		t->onClosed(
+		    [mid]() { cout << "Track 2: Track with mid \"" << mid << "\" is closed" << endl; });
 
 		std::atomic_store(&t2, t);
 	});
 
 	// Test opening a track
 	newTrackMid = "test";
-	auto t1 = pc1.addTrack(Description::Video(newTrackMid));
+
+	Description::Video media(newTrackMid, Description::Direction::SendOnly);
+	media.addH264Codec(96);
+	media.setBitrate(3000);
+	media.addSSRC(1234, "video-send");
+
+	const auto mediaSdp1 = string(media);
+	const auto mediaSdp2 = string(Description::Media(mediaSdp1));
+	if (mediaSdp2 != mediaSdp1)
+		throw runtime_error("Media description parsing test failed");
+
+	auto t1 = pc1.addTrack(media);
 
 	pc1.setLocalDescription();
 
@@ -102,7 +109,7 @@ void test_track() {
 	while ((!(at2 = std::atomic_load(&t2)) || !at2->isOpen() || !t1->isOpen()) && attempts--)
 		this_thread::sleep_for(1s);
 
-	if (pc1.state() != PeerConnection::State::Connected &&
+	if (pc1.state() != PeerConnection::State::Connected ||
 	    pc2.state() != PeerConnection::State::Connected)
 		throw runtime_error("PeerConnection is not connected");
 
@@ -111,7 +118,15 @@ void test_track() {
 
 	// Test renegotiation
 	newTrackMid = "added";
-	t1 = pc1.addTrack(Description::Video(newTrackMid));
+
+	Description::Video media2(newTrackMid, Description::Direction::SendOnly);
+	media2.addH264Codec(96);
+	media2.setBitrate(3000);
+	media2.addSSRC(2468, "video-send");
+
+	// NOTE: Overwriting the old shared_ptr for t1 will cause it's respective
+	//       track to be dropped (so it's SSRCs won't be on the description next time)
+	t1 = pc1.addTrack(media2);
 
 	pc1.setLocalDescription();
 
@@ -130,6 +145,9 @@ void test_track() {
 	this_thread::sleep_for(1s);
 	pc2.close();
 	this_thread::sleep_for(1s);
+
+	if (!t1->isClosed() || !t2->isClosed())
+		throw runtime_error("Track is not closed");
 
 	cout << "Success" << endl;
 }

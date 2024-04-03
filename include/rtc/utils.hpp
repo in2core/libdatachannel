@@ -1,19 +1,9 @@
 /**
  * Copyright (c) 2019-2021 Paul-Louis Ageneau
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 #ifndef RTC_UTILS_H
@@ -96,10 +86,6 @@ public:
 		return callback ? true : false;
 	}
 
-	std::function<void(Args...)> wrap() const {
-		return [this](Args... args) { (*this)(std::move(args)...); };
-	}
-
 protected:
 	virtual void set(std::function<void(Args...)> func) { callback = std::move(func); }
 	virtual bool call(Args... args) const {
@@ -148,7 +134,7 @@ template <typename T> class CheshireCat {
 public:
 	CheshireCat(impl_ptr<T> impl) : mImpl(std::move(impl)) {}
 	template <typename... Args>
-	CheshireCat(Args... args) : mImpl(std::make_shared<T>(std::move(args)...)) {}
+	CheshireCat(Args... args) : mImpl(std::make_shared<T>(std::forward<Args>(args)...)) {}
 	CheshireCat(CheshireCat<T> &&cc) { *this = std::move(cc); }
 	CheshireCat(const CheshireCat<T> &) = delete;
 
