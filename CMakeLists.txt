@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.7)
 project(libdatachannel
-	VERSION 0.21.1
+	VERSION 0.21.2
 	LANGUAGES CXX)
 set(PROJECT_DESCRIPTION "C/C++ WebRTC network library featuring Data Channels, Media Transport, and WebSockets")
 
@@ -23,6 +23,7 @@ option(NO_TESTS "Disable tests build" OFF)
 option(WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 option(CAPI_STDCALL "Set calling convention of C API callbacks stdcall" OFF)
 option(SCTP_DEBUG "Enable SCTP debugging output to verbose log" OFF)
+option(RTC_UPDATE_VERSION_HEADER "Enable updating the version header" OFF)
 
 if (USE_GNUTLS AND USE_MBEDTLS)
 	message(FATAL_ERROR "Both USE_MBEDTLS and USE_GNUTLS cannot be enabled at the same time")
@@ -87,6 +88,7 @@ set(LIBDATACHANNEL_SOURCES
 	${CMAKE_CURRENT_SOURCE_DIR}/src/capi.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/plihandler.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/pacinghandler.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/src/rembhandler.cpp
 )
 
 set(LIBDATACHANNEL_HEADERS
@@ -123,6 +125,7 @@ set(LIBDATACHANNEL_HEADERS
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/utils.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/plihandler.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/pacinghandler.hpp
+	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/rembhandler.hpp
 	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/version.h
 )
 
@@ -258,10 +261,12 @@ else()
 	add_library(Usrsctp::Usrsctp ALIAS usrsctp)
 endif()
 
-configure_file (
-    ${PROJECT_SOURCE_DIR}/cmake/version.h.in
-	${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/version.h
-)
+if(RTC_UPDATE_VERSION_HEADER)
+	configure_file (
+		${PROJECT_SOURCE_DIR}/cmake/version.h.in
+		${CMAKE_CURRENT_SOURCE_DIR}/include/rtc/version.h
+	)
+endif()
 
 add_library(datachannel SHARED
 	${LIBDATACHANNEL_SOURCES}
