@@ -4,7 +4,7 @@
 	shallow = true
 [submodule "deps/usrsctp"]
 	path = deps/usrsctp
-	url = https://github.com/LeoNavel/usrsctp.git
+	url = https://github.com/in2core/usrsctp.git
 	shallow = true
 [submodule "deps/libjuice"]
 	path = deps/libjuice
