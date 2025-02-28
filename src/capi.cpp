@@ -1414,14 +1414,6 @@ int rtcGetLastTrackSenderReportTimestamp(int id, uint32_t *timestamp) {
 	});
 }
 
-int rtcSetNeedsToSendRtcpSr(int id) {
-	return wrap([id] {
-		auto sender = getRtcpSrReporter(id);
-		sender->setNeedsToReport();
-		return RTC_ERR_SUCCESS;
-	});
-}
-
 int rtcGetTrackPayloadTypesForCodec(int tr, const char *ccodec, int *buffer, int size) {
 	return wrap([&] {
 		auto track = getTrack(tr);
@@ -1496,6 +1488,11 @@ int rtcSetSsrcForType(const char *mediaType, const char *sdp, char *buffer, cons
 		}
 		return copyAndReturn(string(description), buffer, bufferSize);
 	});
+}
+
+int rtcSetNeedsToSendRtcpSr(int) {
+	// Dummy
+	return RTC_ERR_SUCCESS;
 }
 
 #endif // RTC_ENABLE_MEDIA
@@ -1581,7 +1578,7 @@ int rtcGetWebSocketPath(int ws, char *buffer, int size) {
 	});
 }
 
-RTC_C_EXPORT int rtcCreateWebSocketServer(const rtcWsServerConfiguration *config,
+int rtcCreateWebSocketServer(const rtcWsServerConfiguration *config,
                                           rtcWebSocketClientCallbackFunc cb) {
 	return wrap([&] {
 		if (!config)
@@ -1618,7 +1615,7 @@ RTC_C_EXPORT int rtcCreateWebSocketServer(const rtcWsServerConfiguration *config
 	});
 }
 
-RTC_C_EXPORT int rtcDeleteWebSocketServer(int wsserver) {
+int rtcDeleteWebSocketServer(int wsserver) {
 	return wrap([&] {
 		auto webSocketServer = getWebSocketServer(wsserver);
 		webSocketServer->onClient(nullptr);
@@ -1628,7 +1625,7 @@ RTC_C_EXPORT int rtcDeleteWebSocketServer(int wsserver) {
 	});
 }
 
-RTC_C_EXPORT int rtcGetWebSocketServerPort(int wsserver) {
+int rtcGetWebSocketServerPort(int wsserver) {
 	return wrap([&] {
 		auto webSocketServer = getWebSocketServer(wsserver);
 		return int(webSocketServer->port());
